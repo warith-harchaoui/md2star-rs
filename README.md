@@ -51,18 +51,21 @@ let bytes = md2star_rs::markdown_to_docx_bytes("Hello **world**").unwrap();
 
 More recipes in [`EXAMPLES.md`](EXAMPLES.md).
 
-## What works today (v0.1)
+## What works today (v0.2)
 
 | Markdown | DOCX output |
 |---|---|
 | Headings `#`–`######` | Bold, level-scaled paragraphs |
 | Paragraphs, `**bold**`, `_italic_`, `` `code` `` | Runs with matching formatting |
-| Bullet & ordered lists | Marker-prefixed paragraphs |
+| Bullet & ordered lists | **Native Word numbering** (`numbering.xml` + `numPr`); ordered lists restart at 1; nesting → indent levels |
 | GFM pipe tables | Real Word tables (`<w:tbl>`) |
 | Fenced code blocks | Monospace, line-preserving |
 | Block quotes | Rendered inline (recursively) |
-| Footnotes `[^x]` | Inline marker + trailing **Notes** section |
+| Footnotes `[^x]` | **Real Word footnotes** (`word/footnotes.xml`) |
 | Links / images | Visible text / alt placeholder |
+
+**Idempotent by construction:** the same Markdown produces byte-identical `.docx` output on
+every run (no timestamps; deterministic footnote/numbering ids).
 
 ## Scope & trade-offs versus Pandoc `md2star`
 
@@ -72,10 +75,10 @@ a clean follow-up, none a redesign:
 - **Bibliography / citations** — no stable Rust CSL processor exists yet
   (`citeproc-rs` is WIP/nightly), so `[@key]` citations are out of scope for now.
 - **Math → OMML** — `latex2mathml` gets us to MathML, but MathML→OMML has no Rust crate.
-- **Real Word footnotes** (`footnotes.xml`) — v0.1 uses inline markers + a Notes section.
-- **Native list numbering**, **hyperlink relations**, **embedded images**, **`--reference-doc`
-  style inheritance**, and **PPTX** — the Python `md2star` remains the "max-fidelity" path
-  for those; keep it for DOCX+PPTX+PDF with math and citations.
+- **`--reference-doc` style inheritance** — planned for v0.3 (`docx-rs` can read a template
+  `.docx` and expose its styles, so this is feasible).
+- **Hyperlink relations**, **embedded images**, and **PPTX** — the Python `md2star` remains
+  the "max-fidelity" path for those; keep it for DOCX+PPTX+PDF with math and citations.
 
 If you need those, use [`md2star`](https://github.com/warith-harchaoui/md2star). If you need
 a zero-install single binary for straightforward Markdown → Word, use this.

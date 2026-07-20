@@ -2,103 +2,406 @@
 //!
 //! This is the half that replaces Pandoc's OOXML writer. Because we build every run and
 //! paragraph ourselves, we *own* the output — there is no post-hoc `styles.xml` surgery
-//! (the reason the Python md2star ships `postprocess.py`). The trade-off is that we only
-//! emit what we explicitly handle here, so v0.1 formats headings/emphasis/code inline
-//! rather than leaning on named Word styles.
+//! (the reason the Python md2star ships `postprocess.py`).
 //!
-//! Documented v0.1 limitations (each a clean follow-up, none a redesign):
-//! - **Footnotes** render as inline `[label]` markers plus a trailing "Notes" section, not
-//!   real Word footnote parts (`footnotes.xml`).
-//! - **Lists** use a marker glyph/number prefix, not native Word numbering.
-//! - **Links/images** render their text/alt only; no hyperlink relation or embedded media.
-//! - **Block quotes** recurse without an indent/border.
+//! Since v0.2 the writer is stateful (a [`Writer`]) so it can emit two features that need
+//! document-level bookkeeping:
+//! - **Native Word list numbering** — real `numbering.xml` levels + `numPr` on paragraphs,
+//!   not a glyph typed into the text. Each ordered list gets its own numbering instance so
+//!   it restarts at 1; nesting maps to indent levels.
+//! - **Real Word footnotes** — `Run::add_footnote_reference`, which `docx-rs` collects into
+//!   `word/footnotes.xml`, instead of an inline `[n]` marker plus a trailing section.
+//!
+//! Determinism / idempotence: footnote ids come from our own per-document counter (not
+//! `Footnote::new`'s process-global one) and no timestamps are written, so the same
+//! Markdown yields byte-identical `.docx` output on every run — see `tests/convert.rs`.
+//!
+//! Remaining v0.1 limitations still open (tracked follow-ups): links/images render
+//! text/alt only; block quotes recurse without an indent/border; footnote references
+//! inside table cells fall back to a text marker (`docx-rs` only collects footnotes from
+//! top-level document paragraphs); custom ordered-list start numbers render from 1.
 
-use docx_rs::{Docx, Paragraph, Run, RunFonts, Table, TableCell, TableRow};
+use std::collections::HashMap;
+
+use docx_rs::{
+    AbstractNumbering, Docx, Footnote, IndentLevel, Level, LevelJc, LevelText, NumberFormat,
+    Numbering, NumberingId, Paragraph, Run, RunFonts, SpecialIndentType, Start, Table, TableCell,
+    TableRow,
+};
 
 use crate::ast::{Block, Inline};
 
 /// Font used for inline code and code blocks.
 const MONO_FONT: &str = "Consolas";
+/// Abstract numbering id for bullet lists (defined once in [`Writer::new`]).
+const BULLET_ABSTRACT: usize = 0;
+/// Abstract numbering id for ordered/decimal lists.
+const DECIMAL_ABSTRACT: usize = 1;
+/// The single numbering *instance* shared by every bullet list (bullets don't count, so
+/// sharing one instance is harmless and keeps the numbering part small).
+const BULLET_NUM_ID: usize = 1;
+/// Word supports nine list levels (0..=8); deeper nesting is clamped to the last.
+const MAX_LEVEL: usize = 8;
 
 /// Build a complete [`Docx`] from a parsed document.
 ///
-/// Footnote definitions are pulled out of the flow and appended under a "Notes" heading so
-/// that reference order in the body is preserved regardless of where the definitions sat
-/// in the source.
+/// Footnote *definitions* are indexed up front and pulled in at each reference site, so a
+/// definition may sit anywhere in the source relative to its reference(s).
 pub fn build(blocks: &[Block]) -> Docx {
-    let mut docx = Docx::new();
-
-    // First pass: emit the body, holding footnote definitions aside.
-    let mut notes: Vec<&Block> = Vec::new();
+    let mut writer = Writer::new();
+    // Index footnote definitions up front so a reference can precede its definition.
+    writer.index_footnotes(blocks);
     for block in blocks {
-        if let Block::FootnoteDef { .. } = block {
-            notes.push(block);
-        } else {
-            docx = write_block(docx, block);
+        // Definitions are not rendered inline; they are inlined at their reference.
+        if !matches!(block, Block::FootnoteDef { .. }) {
+            writer.write_block(block, 0);
+        }
+    }
+    writer.finish()
+}
+
+/// Holds the document under construction plus the counters that make list numbering and
+/// footnote ids deterministic.
+struct Writer {
+    /// `Option` so builder methods (which consume `self`) can be threaded through `take`.
+    docx: Option<Docx>,
+    /// Next ordered-list numbering instance id to hand out (bullets reuse [`BULLET_NUM_ID`]).
+    next_num_id: usize,
+    /// Next footnote id — our own counter, so output is reproducible run to run.
+    next_footnote_id: usize,
+    /// Footnote label → its definition's block content.
+    footnote_defs: HashMap<String, Vec<Block>>,
+}
+
+impl Writer {
+    /// Create the document and register the two abstract numberings (bullet + decimal) plus
+    /// the shared bullet instance.
+    fn new() -> Self {
+        let docx = Docx::new()
+            .add_abstract_numbering(bullet_abstract())
+            .add_abstract_numbering(decimal_abstract())
+            .add_numbering(Numbering::new(BULLET_NUM_ID, BULLET_ABSTRACT));
+        Writer {
+            docx: Some(docx),
+            // Ordered-list instances start after the reserved bullet instance.
+            next_num_id: BULLET_NUM_ID + 1,
+            next_footnote_id: 1,
+            footnote_defs: HashMap::new(),
         }
     }
 
-    // Second pass: a trailing notes section, only if the document actually had any.
-    if !notes.is_empty() {
-        docx = docx.add_paragraph(heading_paragraph(2, &[Inline::Text("Notes".into())]));
-        for note in notes {
-            if let Block::FootnoteDef { label, content } = note {
-                // Prefix the note's first paragraph with its label so references resolve
-                // visually; deeper structure inside a note is rendered as-is.
-                let marker = format!("[{label}] ");
-                docx = write_note(docx, &marker, content);
+    /// Index a document's footnote definitions before rendering references.
+    fn index_footnotes(&mut self, blocks: &[Block]) {
+        for block in blocks {
+            if let Block::FootnoteDef { label, content } = block {
+                self.footnote_defs.insert(label.clone(), content.clone());
             }
         }
     }
 
-    docx
-}
+    /// Consume the writer and return the finished document.
+    fn finish(mut self) -> Docx {
+        self.docx.take().expect("docx is present until finish")
+    }
 
-/// Emit one block into the document, returning the extended [`Docx`].
-fn write_block(docx: Docx, block: &Block) -> Docx {
-    match block {
-        Block::Heading { level, content } => docx.add_paragraph(heading_paragraph(*level, content)),
-        Block::Paragraph(inlines) => docx.add_paragraph(paragraph(inlines, false, false)),
-        Block::CodeBlock { code, .. } => write_code_block(docx, code),
-        Block::BlockQuote(inner) => write_blocks(docx, inner),
-        Block::List {
-            ordered,
-            start,
-            items,
-        } => write_list(docx, *ordered, *start, items),
-        Block::Table { headers, rows } => docx.add_table(table(headers, rows)),
-        Block::ThematicBreak => {
-            docx.add_paragraph(Paragraph::new().add_run(Run::new().add_text("————————————————")))
+    /// Append a paragraph to the document body.
+    fn push_paragraph(&mut self, paragraph: Paragraph) {
+        let docx = self.docx.take().expect("docx present");
+        self.docx = Some(docx.add_paragraph(paragraph));
+    }
+
+    /// Append a table to the document body.
+    fn push_table(&mut self, table: Table) {
+        let docx = self.docx.take().expect("docx present");
+        self.docx = Some(docx.add_table(table));
+    }
+
+    /// Register a numbering instance (used per ordered list so each restarts at 1).
+    fn register_numbering(&mut self, numbering: Numbering) {
+        let docx = self.docx.take().expect("docx present");
+        self.docx = Some(docx.add_numbering(numbering));
+    }
+
+    /// Allocate the next ordered-list numbering instance id.
+    fn alloc_num_id(&mut self) -> usize {
+        let id = self.next_num_id;
+        self.next_num_id += 1;
+        id
+    }
+
+    /// Allocate the next (deterministic) footnote id.
+    fn alloc_footnote_id(&mut self) -> usize {
+        let id = self.next_footnote_id;
+        self.next_footnote_id += 1;
+        id
+    }
+
+    /// Emit one block. `depth` is the current list-nesting level (0 at the top).
+    fn write_block(&mut self, block: &Block, depth: usize) {
+        match block {
+            Block::Heading { level, content } => {
+                let size = heading_half_points(*level);
+                let mut paragraph = Paragraph::new();
+                // Headings are bold; carry the level's size onto each run.
+                for run in self.inline_runs(content, true, false, true) {
+                    paragraph = paragraph.add_run(run.size(size));
+                }
+                self.push_paragraph(paragraph);
+            }
+            Block::Paragraph(inlines) => {
+                let paragraph = self.paragraph(inlines, false, false, true);
+                self.push_paragraph(paragraph);
+            }
+            Block::CodeBlock { code, .. } => self.write_code_block(code),
+            // Block quotes recurse (no indent/border yet — a tracked follow-up).
+            Block::BlockQuote(inner) => {
+                for child in inner {
+                    self.write_block(child, depth);
+                }
+            }
+            Block::List {
+                ordered,
+                start,
+                items,
+            } => self.write_list(*ordered, *start, items, depth),
+            Block::Table { headers, rows } => {
+                let table = self.table(headers, rows);
+                self.push_table(table);
+            }
+            Block::ThematicBreak => {
+                self.push_paragraph(
+                    Paragraph::new().add_run(Run::new().add_text("————————————————")),
+                );
+            }
+            // Definitions are inlined at their reference; a stray one renders as text.
+            Block::FootnoteDef { label, .. } => {
+                self.push_paragraph(
+                    Paragraph::new().add_run(Run::new().add_text(format!("[{label}]"))),
+                );
+            }
         }
-        // FootnoteDef is handled in `build`; if one reaches here, render it plainly.
-        Block::FootnoteDef { label, content } => write_note(docx, &format!("[{label}] "), content),
+    }
+
+    /// Emit a list with **native Word numbering**.
+    ///
+    /// Ordered lists each get a fresh numbering instance (so they restart at 1); bullet
+    /// lists share one. Nesting maps to the paragraph's indent level. Each item's first
+    /// paragraph carries the number/bullet; a nested list inside an item recurses one level
+    /// deeper.
+    fn write_list(&mut self, ordered: bool, _start: u64, items: &[Vec<Block>], depth: usize) {
+        // Pick (or mint) the numbering instance for this list.
+        let num_id = if ordered {
+            let id = self.alloc_num_id();
+            self.register_numbering(Numbering::new(id, DECIMAL_ABSTRACT));
+            id
+        } else {
+            BULLET_NUM_ID
+        };
+        let level = depth.min(MAX_LEVEL);
+
+        for item in items {
+            // The item's first paragraph becomes the numbered line.
+            if let Some(Block::Paragraph(inlines)) =
+                item.iter().find(|b| matches!(b, Block::Paragraph(_)))
+            {
+                let mut paragraph =
+                    Paragraph::new().numbering(NumberingId::new(num_id), IndentLevel::new(level));
+                for run in self.inline_runs(inlines, false, false, true) {
+                    paragraph = paragraph.add_run(run);
+                }
+                self.push_paragraph(paragraph);
+            }
+            // Nested lists inside the item recurse one indent level deeper.
+            for child in item {
+                if let Block::List {
+                    ordered,
+                    start,
+                    items,
+                } = child
+                {
+                    self.write_list(*ordered, *start, items, depth + 1);
+                }
+            }
+        }
+    }
+
+    /// Emit a code block as one monospace paragraph per line so breaks survive.
+    fn write_code_block(&mut self, code: &str) {
+        // `lines()` drops a trailing newline; an empty block yields no paragraphs.
+        for line in code.lines() {
+            self.push_paragraph(Paragraph::new().add_run(mono(line)));
+        }
+    }
+
+    /// Build a plain paragraph from inline content.
+    fn paragraph(
+        &mut self,
+        inlines: &[Inline],
+        bold: bool,
+        italic: bool,
+        footnotes: bool,
+    ) -> Paragraph {
+        let mut paragraph = Paragraph::new();
+        for run in self.inline_runs(inlines, bold, italic, footnotes) {
+            paragraph = paragraph.add_run(run);
+        }
+        paragraph
+    }
+
+    /// Flatten an inline tree into `docx-rs` runs, threading emphasis flags through nesting.
+    ///
+    /// When `footnotes` is true, a [`Inline::FootnoteRef`] with a known definition becomes a
+    /// real Word footnote reference; otherwise (table cells, footnote bodies) it renders as
+    /// a `[label]` text marker, because `docx-rs` only collects footnotes from top-level
+    /// paragraphs and a marker there would otherwise orphan.
+    fn inline_runs(
+        &mut self,
+        inlines: &[Inline],
+        bold: bool,
+        italic: bool,
+        footnotes: bool,
+    ) -> Vec<Run> {
+        let mut out = Vec::new();
+        for inline in inlines {
+            match inline {
+                Inline::Text(t) => out.push(styled(t, bold, italic)),
+                // Nesting flips one flag and recurses; leaves become runs.
+                Inline::Emph(inner) => out.extend(self.inline_runs(inner, bold, true, footnotes)),
+                Inline::Strong(inner) => {
+                    out.extend(self.inline_runs(inner, true, italic, footnotes))
+                }
+                Inline::Code(t) => out.push(mono(t)),
+                // v0.1: a link contributes only its (formatted) visible text.
+                Inline::Link { text, .. } => {
+                    out.extend(self.inline_runs(text, bold, italic, footnotes))
+                }
+                Inline::SoftBreak => out.push(styled(" ", bold, italic)),
+                Inline::HardBreak => {
+                    out.push(Run::new().add_break(docx_rs::BreakType::TextWrapping))
+                }
+                Inline::FootnoteRef(label) => {
+                    out.push(self.footnote_run(label, bold, italic, footnotes))
+                }
+                Inline::Image(alt) => out.push(styled(&format!("[image: {alt}]"), bold, italic)),
+            }
+        }
+        out
+    }
+
+    /// Build the run for a footnote reference — a real Word footnote when possible.
+    fn footnote_run(&mut self, label: &str, bold: bool, italic: bool, footnotes: bool) -> Run {
+        // Clone the definition out first so the following `&mut self` calls don't overlap.
+        if footnotes {
+            if let Some(content) = self.footnote_defs.get(label).cloned() {
+                let id = self.alloc_footnote_id();
+                // Build the footnote with our own deterministic id via a struct literal —
+                // `Footnote::new()` would pull a non-reproducible process-global id instead.
+                let mut note = Footnote {
+                    id,
+                    content: Vec::new(),
+                };
+                for paragraph in self.footnote_content(&content) {
+                    note.add_content(paragraph);
+                }
+                return Run::new().add_footnote_reference(note);
+            }
+        }
+        // No live footnote (undefined label, or a cell/body context): fall back to a marker.
+        styled(&format!("[{label}]"), bold, italic)
+    }
+
+    /// Render a footnote definition's blocks into paragraphs for `footnotes.xml`.
+    ///
+    /// Footnotes here are rendered without *nested* footnotes (`footnotes = false`), which
+    /// keeps ids linear and avoids a footnote-inside-a-footnote edge case.
+    fn footnote_content(&mut self, blocks: &[Block]) -> Vec<Paragraph> {
+        let mut paragraphs = Vec::new();
+        for block in blocks {
+            if let Block::Paragraph(inlines) = block {
+                paragraphs.push(self.paragraph(inlines, false, false, false));
+            }
+        }
+        // A footnote must have at least one paragraph or Word complains; guarantee one.
+        if paragraphs.is_empty() {
+            paragraphs.push(Paragraph::new());
+        }
+        paragraphs
+    }
+
+    /// Build a `docx-rs` [`Table`] from header + body cells.
+    fn table(&mut self, headers: &[Vec<Inline>], rows: &[Vec<Vec<Inline>>]) -> Table {
+        let mut table_rows = Vec::new();
+
+        // Header row is bold to read like a GFM header. Cells use plain (marker) footnotes.
+        let header_cells: Vec<TableCell> = headers
+            .iter()
+            .map(|cell| TableCell::new().add_paragraph(self.paragraph(cell, true, false, false)))
+            .collect();
+        table_rows.push(TableRow::new(header_cells));
+
+        for row in rows {
+            let cells: Vec<TableCell> = row
+                .iter()
+                .map(|cell| {
+                    TableCell::new().add_paragraph(self.paragraph(cell, false, false, false))
+                })
+                .collect();
+            table_rows.push(TableRow::new(cells));
+        }
+
+        Table::new(table_rows)
     }
 }
 
-/// Emit a sequence of blocks (used for block-quote and note bodies).
-fn write_blocks(mut docx: Docx, blocks: &[Block]) -> Docx {
-    for block in blocks {
-        docx = write_block(docx, block);
+// Free helpers below don't need writer state.
+
+/// Build the abstract numbering for bullet lists: nine levels of alternating glyphs.
+fn bullet_abstract() -> AbstractNumbering {
+    let mut abstract_num = AbstractNumbering::new(BULLET_ABSTRACT);
+    for level in 0..=MAX_LEVEL {
+        // Cycle filled/hollow/square bullets so nested levels read differently.
+        let glyph = match level % 3 {
+            0 => "●",
+            1 => "○",
+            _ => "▪",
+        };
+        abstract_num = abstract_num.add_level(indented_level(
+            level,
+            NumberFormat::new("bullet"),
+            LevelText::new(glyph),
+        ));
     }
-    docx
+    abstract_num
 }
 
-/// Build a heading paragraph: bold, with a size that decreases as the level deepens.
-///
-/// We format inline rather than via a named Word style so headings look right even though
-/// v0.1 does not yet ship a curated `styles.xml`.
-fn heading_paragraph(level: u8, content: &[Inline]) -> Paragraph {
-    let size = heading_half_points(level);
-    let mut paragraph = Paragraph::new();
-    // Headings are always bold; carry the level's size onto every run.
-    for run in runs(content, true, false) {
-        paragraph = paragraph.add_run(run.size(size));
+/// Build the abstract numbering for ordered lists: nine decimal levels (`%1.`, `%2.`, …).
+fn decimal_abstract() -> AbstractNumbering {
+    let mut abstract_num = AbstractNumbering::new(DECIMAL_ABSTRACT);
+    for level in 0..=MAX_LEVEL {
+        // `%N` references the counter of the Nth level, so each depth prints its own number.
+        let text = format!("%{}.", level + 1);
+        abstract_num = abstract_num.add_level(indented_level(
+            level,
+            NumberFormat::new("decimal"),
+            LevelText::new(text),
+        ));
     }
-    paragraph
+    abstract_num
 }
 
-/// Half-point font size for a heading level (`size()` in `docx-rs` is in half-points, so
-/// e.g. 40 → 20pt). H1 is largest; anything past H6 shares the H6 size.
+/// A single numbering level with a hanging indent that grows with depth.
+fn indented_level(level: usize, format: NumberFormat, text: LevelText) -> Level {
+    // 720 twips (~0.5in) of indent per level, with a 360-twip hanging indent for the marker.
+    let left = 720 * (level as i32 + 1);
+    Level::new(level, Start::new(1), format, text, LevelJc::new("left")).indent(
+        Some(left),
+        Some(SpecialIndentType::Hanging(360)),
+        None,
+        None,
+    )
+}
+
+/// Half-point font size for a heading level (`size()` is in half-points, so 40 → 20pt).
 fn heading_half_points(level: u8) -> usize {
     match level {
         1 => 40,
@@ -108,39 +411,6 @@ fn heading_half_points(level: u8) -> usize {
         5 => 24,
         _ => 22,
     }
-}
-
-/// Build a plain paragraph from inline content with the given base emphasis flags.
-fn paragraph(inlines: &[Inline], bold: bool, italic: bool) -> Paragraph {
-    let mut paragraph = Paragraph::new();
-    for run in runs(inlines, bold, italic) {
-        paragraph = paragraph.add_run(run);
-    }
-    paragraph
-}
-
-/// Flatten an inline tree into `docx-rs` runs, threading the accumulated bold/italic flags
-/// down through nested emphasis.
-fn runs(inlines: &[Inline], bold: bool, italic: bool) -> Vec<Run> {
-    let mut out = Vec::new();
-    for inline in inlines {
-        match inline {
-            Inline::Text(t) => out.push(styled(t, bold, italic)),
-            // Nesting just flips one flag and recurses; the leaves become runs.
-            Inline::Emph(inner) => out.extend(runs(inner, bold, true)),
-            Inline::Strong(inner) => out.extend(runs(inner, true, italic)),
-            Inline::Code(t) => out.push(mono(t)),
-            // v0.1: a link contributes only its (formatted) visible text.
-            Inline::Link { text, .. } => out.extend(runs(text, bold, italic)),
-            // A soft break is just whitespace between words.
-            Inline::SoftBreak => out.push(styled(" ", bold, italic)),
-            Inline::HardBreak => out.push(Run::new().add_break(docx_rs::BreakType::TextWrapping)),
-            // Reference marker; real Word footnote parts are a follow-up (see module docs).
-            Inline::FootnoteRef(label) => out.push(styled(&format!("[{label}]"), bold, italic)),
-            Inline::Image(alt) => out.push(styled(&format!("[image: {alt}]"), bold, italic)),
-        }
-    }
-    out
 }
 
 /// A text run with the requested emphasis applied.
@@ -160,88 +430,4 @@ fn mono(text: &str) -> Run {
     Run::new()
         .add_text(text)
         .fonts(RunFonts::new().ascii(MONO_FONT).hi_ansi(MONO_FONT))
-}
-
-/// Emit a code block as one monospace paragraph per source line so line breaks survive.
-fn write_code_block(mut docx: Docx, code: &str) -> Docx {
-    // `lines()` drops a trailing newline; an empty block yields no paragraphs, which is fine.
-    for line in code.lines() {
-        docx = docx.add_paragraph(Paragraph::new().add_run(mono(line)));
-    }
-    docx
-}
-
-/// Emit a list. v0.1 prefixes each item with a bullet glyph or `N.` and renders the item's
-/// first paragraph; a nested list inside an item recurses (getting its own markers).
-fn write_list(mut docx: Docx, ordered: bool, start: u64, items: &[Vec<Block>]) -> Docx {
-    for (index, item) in items.iter().enumerate() {
-        let marker = if ordered {
-            format!("{}.\t", start + index as u64)
-        } else {
-            "•\t".to_string()
-        };
-
-        // Lead with the marker, then the item's first paragraph of inline content.
-        let mut paragraph = Paragraph::new().add_run(Run::new().add_text(marker));
-        if let Some(Block::Paragraph(inlines)) =
-            item.iter().find(|b| matches!(b, Block::Paragraph(_)))
-        {
-            for run in runs(inlines, false, false) {
-                paragraph = paragraph.add_run(run);
-            }
-        }
-        docx = docx.add_paragraph(paragraph);
-
-        // Render nested lists that live inside this item.
-        for block in item {
-            if let Block::List { .. } = block {
-                docx = write_block(docx, block);
-            }
-        }
-    }
-    docx
-}
-
-/// Emit a footnote definition as a marker-prefixed paragraph followed by any extra blocks.
-fn write_note(mut docx: Docx, marker: &str, content: &[Block]) -> Docx {
-    // Splice the marker onto the first paragraph so `[label]` sits inline with the text.
-    if let Some(Block::Paragraph(inlines)) =
-        content.iter().find(|b| matches!(b, Block::Paragraph(_)))
-    {
-        let mut paragraph = Paragraph::new().add_run(Run::new().add_text(marker));
-        for run in runs(inlines, false, false) {
-            paragraph = paragraph.add_run(run);
-        }
-        docx = docx.add_paragraph(paragraph);
-    }
-    // Any non-paragraph content in the note (nested list, code) is rendered after it.
-    for block in content {
-        if !matches!(block, Block::Paragraph(_)) {
-            docx = write_block(docx, block);
-        }
-    }
-    docx
-}
-
-/// Build a `docx-rs` [`Table`] from header + body cells.
-fn table(headers: &[Vec<Inline>], rows: &[Vec<Vec<Inline>>]) -> Table {
-    let mut table_rows = Vec::new();
-
-    // Header row is bold to read like a GFM table's header.
-    let header_cells: Vec<TableCell> = headers
-        .iter()
-        .map(|cell| TableCell::new().add_paragraph(paragraph(cell, true, false)))
-        .collect();
-    table_rows.push(TableRow::new(header_cells));
-
-    // Body rows render their cells plainly.
-    for row in rows {
-        let cells: Vec<TableCell> = row
-            .iter()
-            .map(|cell| TableCell::new().add_paragraph(paragraph(cell, false, false)))
-            .collect();
-        table_rows.push(TableRow::new(cells));
-    }
-
-    Table::new(table_rows)
 }

@@ -67,31 +67,77 @@ pub fn parse(markdown: &str) -> Vec<Block> {
 ///
 /// On an `End`, we `break` *without* consuming it: the caller that opened the container is
 /// responsible for eating its own `End`, which keeps the nesting bookkeeping in one place.
+///
+/// Bare inline content at this level (which is how CommonMark represents *tight* list items
+/// and tight block quotes — no `<p>` wrapper) is gathered into an implicit paragraph rather
+/// than dropped.
 fn blocks(cursor: &mut Cursor) -> Vec<Block> {
     let mut out = Vec::new();
-    while let Some(event) = cursor.peek() {
-        match event {
-            // A new block container opens: take the tag, then dispatch on it.
-            Event::Start(_) => {
-                // The peek proved this is a Start, so the `next`/`match` cannot fail.
-                if let Some(Event::Start(tag)) = cursor.next() {
-                    if let Some(block) = container(cursor, tag) {
-                        out.push(block);
-                    }
-                }
-            }
+    loop {
+        // Decide what the next event is *before* mutating the cursor, so the peek borrow
+        // ends before we call `next()` inside a branch.
+        let is_block_container = match cursor.peek() {
+            None => break,
             // Our enclosing container is closing — hand control back to the opener.
-            Event::End(_) => break,
+            Some(Event::End(_)) => break,
             // A horizontal rule is a standalone block with no children.
-            Event::Rule => {
+            Some(Event::Rule) => {
                 cursor.next();
                 out.push(Block::ThematicBreak);
+                continue;
             }
-            // Stray inline/HTML at the top level (rare): skip it rather than mis-nest.
-            _ => {
-                cursor.next();
+            // A block-level start dispatches to `container`; an inline start is tight content.
+            Some(Event::Start(tag)) => !is_inline_start(tag),
+            // Text / code / breaks at block level → tight content.
+            Some(_) => false,
+        };
+
+        if is_block_container {
+            if let Some(Event::Start(tag)) = cursor.next() {
+                if let Some(block) = container(cursor, tag) {
+                    out.push(block);
+                }
+            }
+        } else {
+            // Gather the run of bare inline content into an implicit paragraph.
+            let content = gather_block_inlines(cursor);
+            if !content.is_empty() {
+                out.push(Block::Paragraph(content));
             }
         }
+    }
+    out
+}
+
+/// Is this an *inline* container tag (as opposed to a block-level one)?
+///
+/// Used to tell tight list-item text (bare inlines) apart from real block children.
+fn is_inline_start(tag: &Tag) -> bool {
+    matches!(
+        tag,
+        Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Link { .. } | Tag::Image { .. }
+    )
+}
+
+/// Collect bare inline content up to (but not consuming) the next block boundary.
+///
+/// Stops at end-of-stream, any `End`, or any block-level `Start` — none of which it eats, so
+/// the caller's nesting bookkeeping is untouched.
+fn gather_block_inlines(cursor: &mut Cursor) -> Vec<Inline> {
+    let mut out = Vec::new();
+    loop {
+        let stop = match cursor.peek() {
+            None => true,
+            Some(Event::End(_)) => true,
+            Some(Event::Start(tag)) => !is_inline_start(tag),
+            Some(_) => false,
+        };
+        if stop {
+            break;
+        }
+        // Safe: the peek above proved there is a consumable inline event here.
+        let event = cursor.next().expect("peeked inline event");
+        push_inline(event, cursor, &mut out);
     }
     out
 }
@@ -218,36 +264,43 @@ fn inlines(cursor: &mut Cursor) -> Vec<Inline> {
             None => break,
             // The one End that belongs to this container — stop, already consumed.
             Some(Event::End(_)) => break,
-            Some(Event::Text(t)) => out.push(Inline::Text(t.to_string())),
-            Some(Event::Code(t)) => out.push(Inline::Code(t.to_string())),
-            Some(Event::SoftBreak) => out.push(Inline::SoftBreak),
-            Some(Event::HardBreak) => out.push(Inline::HardBreak),
-            Some(Event::FootnoteReference(label)) => {
-                out.push(Inline::FootnoteRef(label.to_string()))
-            }
-            Some(Event::Start(Tag::Emphasis)) => out.push(Inline::Emph(inlines(cursor))),
-            Some(Event::Start(Tag::Strong)) => out.push(Inline::Strong(inlines(cursor))),
-            // Strikethrough isn't modelled as its own run yet; keep the words, drop the
-            // styling by splicing its inner inlines transparently.
-            Some(Event::Start(Tag::Strikethrough)) => out.extend(inlines(cursor)),
-            Some(Event::Start(Tag::Link { dest_url, .. })) => out.push(Inline::Link {
-                text: inlines(cursor),
-                url: dest_url.to_string(),
-            }),
-            // Image alt text lives in the inner inlines; flatten it to a placeholder.
-            Some(Event::Start(Tag::Image { .. })) => {
-                let alt = plain_text(&inlines(cursor));
-                out.push(Inline::Image(alt));
-            }
-            // Any other inline container: recurse to stay balanced, ignore the wrapper.
-            Some(Event::Start(_)) => {
-                let _ = inlines(cursor);
-            }
-            // Task-list markers, raw HTML, math, etc.: skipped in v0.1.
-            Some(_) => {}
+            Some(event) => push_inline(event, cursor, &mut out),
         }
     }
     out
+}
+
+/// Translate one already-consumed inline `event` into [`Inline`]s, recursing into inline
+/// containers. Shared by [`inlines`] (End-terminated) and [`gather_block_inlines`]
+/// (boundary-terminated) so the inline vocabulary lives in exactly one place.
+fn push_inline(event: Event, cursor: &mut Cursor, out: &mut Vec<Inline>) {
+    match event {
+        Event::Text(t) => out.push(Inline::Text(t.to_string())),
+        Event::Code(t) => out.push(Inline::Code(t.to_string())),
+        Event::SoftBreak => out.push(Inline::SoftBreak),
+        Event::HardBreak => out.push(Inline::HardBreak),
+        Event::FootnoteReference(label) => out.push(Inline::FootnoteRef(label.to_string())),
+        Event::Start(Tag::Emphasis) => out.push(Inline::Emph(inlines(cursor))),
+        Event::Start(Tag::Strong) => out.push(Inline::Strong(inlines(cursor))),
+        // Strikethrough isn't modelled as its own run yet; keep the words, drop the styling
+        // by splicing its inner inlines transparently.
+        Event::Start(Tag::Strikethrough) => out.extend(inlines(cursor)),
+        Event::Start(Tag::Link { dest_url, .. }) => out.push(Inline::Link {
+            text: inlines(cursor),
+            url: dest_url.to_string(),
+        }),
+        // Image alt text lives in the inner inlines; flatten it to a placeholder.
+        Event::Start(Tag::Image { .. }) => {
+            let alt = plain_text(&inlines(cursor));
+            out.push(Inline::Image(alt));
+        }
+        // Any other inline container: recurse to stay balanced, ignore the wrapper.
+        Event::Start(_) => {
+            let _ = inlines(cursor);
+        }
+        // Task-list markers, raw HTML, math, etc.: skipped in v0.1.
+        _ => {}
+    }
 }
 
 /// Flatten an inline slice to its bare text — used for image alt placeholders.

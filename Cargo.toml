@@ -7,7 +7,7 @@
 # the scope/trade-offs versus the Pandoc-backed original.
 [package]
 name = "md2star-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.74"
 license = "Apache-2.0"
