@@ -1,0 +1,48 @@
+# md2star-rs — a pure-Rust Markdown → DOCX writer, no Pandoc, no subprocess.
+#
+# The Python `md2star` is a thin wrapper around Pandoc; this spin-off keeps the same
+# *goal* (Markdown in, a faithful .docx out) but reaches it with an all-Rust reader →
+# AST → writer pipeline (`pulldown-cmark` → our IR → `docx-rs`). The payoff is a single
+# static binary that runs on every OS/device with no Pandoc install — see README.md for
+# the scope/trade-offs versus the Pandoc-backed original.
+[package]
+name = "md2star-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "Apache-2.0"
+description = "Pure-Rust Markdown → DOCX writer (pulldown-cmark → AST → docx-rs). A Pandoc-free spin-off of md2star."
+repository = "https://github.com/warith-harchaoui/md2star-rs"
+authors = ["Warith HARCHAOUI <warith@deraison.ai>"]
+readme = "README.md"
+keywords = ["markdown", "docx", "word", "converter", "pandoc-free"]
+categories = ["command-line-utilities", "text-processing"]
+
+# The library is the reusable core (also the future WASM entry point); the binary is the
+# `md2docx` CLI that mirrors the original md2star command name.
+[lib]
+name = "md2star_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "md2docx"
+path = "src/main.rs"
+
+[dependencies]
+# CommonMark + GFM reader. We drive it in *event* mode and fold the flat event stream into
+# our own block/inline AST, exactly the reader/writer seam Pandoc uses internally.
+pulldown-cmark = { version = "0.13", default-features = false }
+# The OOXML writer. Unlike Pandoc we own `styles.xml`, so nothing gets stripped after the
+# fact — this is what makes the original md2star's `postprocess.py` zip-surgery unnecessary.
+docx-rs = "0.4"
+# Typed error enums for the library surface — no stringly-typed errors leaking to callers.
+thiserror = "2"
+# Argument parsing for the `md2docx` binary (derive keeps the CLI declaration close to the
+# struct it fills). Only the binary uses it; the library stays dependency-light.
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# Write generated .docx files into a throwaway dir instead of polluting the repo.
+tempfile = "3"
+# Crack open the produced .docx (a zip) in tests to assert on `word/document.xml`.
+zip = "2"

@@ -1,0 +1,67 @@
+# Examples
+
+Copy-paste recipes for `md2star-rs`. Every snippet is self-contained.
+
+## CLI: convert a file
+
+```bash
+md2docx report.md
+# wrote report.docx
+```
+
+Choose the output path explicitly:
+
+```bash
+md2docx report.md -o build/report-final.docx
+# wrote build/report-final.docx
+```
+
+Convert a whole folder (shell loop — no feature needed):
+
+```bash
+for f in docs/*.md; do md2docx "$f"; done
+```
+
+## Library: string → file
+
+```rust
+use std::path::Path;
+
+fn main() -> md2star_rs::Result<()> {
+    let markdown = "# Report\n\nHello **world**, with `code` and _emphasis_.";
+    md2star_rs::markdown_to_docx_file(markdown, Path::new("report.docx"))?;
+    Ok(())
+}
+```
+
+## Library: string → bytes (servers / WASM)
+
+Handy when you never want to touch the disk (an HTTP handler, a browser build):
+
+```rust
+let bytes = md2star_rs::markdown_to_docx_bytes("# Hi\n\nBody.").unwrap();
+// A .docx is a zip, so the buffer starts with the zip magic.
+assert_eq!(&bytes[..2], b"PK");
+// e.g. return `bytes` as an application/vnd.openxmlformats-...-document response.
+```
+
+## Library: inspect the parsed AST
+
+The reader is public, so you can fold Markdown into the intermediate representation without
+producing a `.docx` — useful for tests or a second backend:
+
+```rust
+use md2star_rs::ast::Block;
+
+let blocks = md2star_rs::reader::parse("# Title\n\nHello.");
+assert!(matches!(blocks[0], Block::Heading { level: 1, .. }));
+assert!(matches!(blocks[1], Block::Paragraph(_)));
+```
+
+## A table round-trips to a real Word table
+
+```rust
+let md = "| A | B |\n|---|---|\n| 1 | 2 |";
+let bytes = md2star_rs::markdown_to_docx_bytes(md).unwrap();
+// The produced document.xml contains a `<w:tbl>` element (verified in tests/convert.rs).
+```
