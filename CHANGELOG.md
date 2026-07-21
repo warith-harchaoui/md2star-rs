@@ -4,6 +4,28 @@ All notable changes to `md2star-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — unreleased
+
+Reference-doc styling — the last big gap versus the Pandoc-backed original.
+
+### Added
+- **`--reference-doc template.docx`** (Pandoc parity). The output inherits the template's
+  styles, theme, fonts and page setup (size + margins, via the template's section
+  properties); the template's body content is discarded. Headings and block quotes are
+  emitted through the template's **named styles** (`Heading1`…`Heading6`, `Quote`) when they
+  exist, falling back to the inline bold/size formatting when they don't — so converting
+  against a house template produces a document that looks like that template.
+  - Library API: `markdown_to_docx_bytes_with_reference(md, &template_bytes)` and
+    `convert_path_with_reference(input, output, reference)`.
+  - New `Error::Template` variant distinguishes "the reference isn't a valid `.docx`" from a
+    plain I/O error.
+  - Numbering ids we add for lists are offset above any the template already declares, so a
+    template with its own numbering never collides with ours.
+- **8 integration tests** (`tests/reference_doc.rs`) building templates in-memory: page-size
+  inheritance, named heading/quote styling, graceful fallback when a style is absent, the
+  Heading6 clamp, numbering non-collision, byte-idempotence on the reference path, and the
+  invalid-template error.
+
 ## [0.2.1] — unreleased
 
 Makes the v0.2.0 idempotence guarantee actually hold under concurrency — the fix that turns

@@ -17,6 +17,12 @@ pub enum Error {
     /// the build/pack calls, so we flatten them to a message at the boundary.
     #[error("failed to write DOCX: {0}")]
     Docx(String),
+
+    /// A `--reference-doc` template could not be read back as a valid `.docx`. Kept
+    /// separate from [`Error::Io`] so callers can tell "the template file is missing"
+    /// (an `Io`) apart from "the file exists but isn't a usable Word document" (this).
+    #[error("invalid reference document: {0}")]
+    Template(String),
 }
 
 /// Crate-wide result alias so signatures read `Result<T>` rather than the full path.

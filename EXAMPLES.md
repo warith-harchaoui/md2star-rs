@@ -22,6 +22,30 @@ Convert a whole folder (shell loop — no feature needed):
 for f in docs/*.md; do md2docx "$f"; done
 ```
 
+## CLI: style the output after a reference document
+
+Pass an existing `.docx` whose look you want to reuse. The output inherits its styles, theme,
+fonts and page setup, and headings/quotes are emitted through its named styles
+(`Heading1`…`Heading6`, `Quote`):
+
+```bash
+md2docx report.md --reference-doc house-template.docx
+# wrote report.docx  (styled like house-template.docx)
+```
+
+## Library: string → bytes, styled after a template
+
+```rust
+// Read the template `.docx` you want to inherit styling from.
+let template = std::fs::read("house-template.docx").unwrap();
+let bytes =
+    md2star_rs::markdown_to_docx_bytes_with_reference("# Title\n\nBody.", &template).unwrap();
+// A .docx is a zip, so the buffer starts with the zip magic.
+assert_eq!(&bytes[..2], b"PK");
+```
+
+To convert a file on disk directly with a template, use `convert_path_with_reference`.
+
 ## Library: string → file
 
 ```rust

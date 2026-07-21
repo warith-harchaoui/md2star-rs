@@ -37,9 +37,14 @@ See [`scripts/brew.sh`](scripts/brew.sh) for a Homebrew-based Rust setup on macO
 ## Usage
 
 ```bash
-md2docx report.md                 # → report.docx (next to the input)
+md2docx report.md                              # → report.docx (next to the input)
 md2docx report.md -o out/final.docx
+md2docx report.md --reference-doc house.docx   # style the output after house.docx
 ```
+
+`--reference-doc` inherits the template's styles, theme, fonts and page setup, and routes
+headings/quotes through its named styles (`Heading1`…`Heading6`, `Quote`) — the same idea as
+Pandoc's flag of the same name.
 
 As a library:
 
@@ -47,15 +52,20 @@ As a library:
 use std::path::Path;
 md2star_rs::markdown_to_docx_file("# Title\n\nHello.", Path::new("out.docx")).unwrap();
 let bytes = md2star_rs::markdown_to_docx_bytes("Hello **world**").unwrap();
+
+// Style the output after a reference template read from disk.
+let template = std::fs::read("house.docx").unwrap();
+let styled = md2star_rs::markdown_to_docx_bytes_with_reference("# Title", &template).unwrap();
 ```
 
 More recipes in [`EXAMPLES.md`](EXAMPLES.md).
 
-## What works today (v0.2)
+## What works today (v0.3)
 
 | Markdown | DOCX output |
 |---|---|
-| Headings `#`–`######` | Bold, level-scaled paragraphs |
+| Headings `#`–`######` | Bold, level-scaled paragraphs — or the template's `Heading1`…`Heading6` styles under `--reference-doc` |
+| Reference template | **`--reference-doc template.docx`** — inherit styles/theme/fonts/page-setup; headings & quotes via named styles |
 | Paragraphs, `**bold**`, `_italic_`, `` `code` `` | Runs with matching formatting |
 | Bullet & ordered lists | **Native Word numbering** (`numbering.xml` + `numPr`); ordered lists restart at 1; nesting → indent levels |
 | GFM pipe tables | Real Word tables (`<w:tbl>`) |
@@ -65,7 +75,8 @@ More recipes in [`EXAMPLES.md`](EXAMPLES.md).
 | Links / images | Visible text / alt placeholder |
 
 **Idempotent by construction:** the same Markdown produces byte-identical `.docx` output on
-every run (no timestamps; deterministic footnote/numbering ids).
+every run — even across concurrent threads (no timestamps; footnote, numbering *and*
+paragraph ids all come from per-document counters, never a process-global one).
 
 ## Scope & trade-offs versus Pandoc `md2star`
 
@@ -75,8 +86,6 @@ a clean follow-up, none a redesign:
 - **Bibliography / citations** — no stable Rust CSL processor exists yet
   (`citeproc-rs` is WIP/nightly), so `[@key]` citations are out of scope for now.
 - **Math → OMML** — `latex2mathml` gets us to MathML, but MathML→OMML has no Rust crate.
-- **`--reference-doc` style inheritance** — planned for v0.3 (`docx-rs` can read a template
-  `.docx` and expose its styles, so this is feasible).
 - **Hyperlink relations**, **embedded images**, and **PPTX** — the Python `md2star` remains
   the "max-fidelity" path for those; keep it for DOCX+PPTX+PDF with math and citations.
 

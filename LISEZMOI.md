@@ -39,15 +39,24 @@ Voir [`scripts/brew.sh`](scripts/brew.sh) pour une installation de Rust via Home
 ## Utilisation
 
 ```bash
-md2docx rapport.md                  # → rapport.docx (à côté de l'entrée)
+md2docx rapport.md                             # → rapport.docx (à côté de l'entrée)
 md2docx rapport.md -o out/final.docx
+md2docx rapport.md --reference-doc modele.docx # style le résultat comme modele.docx
 ```
+
+`--reference-doc` hérite des styles, du thème, des polices et de la mise en page du modèle,
+et rend les titres/citations via ses styles nommés (`Heading1`…`Heading6`, `Quote`) — comme
+l'option homonyme de Pandoc.
 
 En bibliothèque :
 
 ```rust
 use std::path::Path;
 md2star_rs::markdown_to_docx_file("# Titre\n\nBonjour.", Path::new("out.docx")).unwrap();
+
+// Styler la sortie d'après un modèle lu sur disque.
+let modele = std::fs::read("modele.docx").unwrap();
+let stylise = md2star_rs::markdown_to_docx_bytes_with_reference("# Titre", &modele).unwrap();
 ```
 
 Plus d'exemples dans [`EXAMPLES.md`](EXAMPLES.md).
@@ -56,8 +65,7 @@ Plus d'exemples dans [`EXAMPLES.md`](EXAMPLES.md).
 
 Première version ciblée, pas un remplaçant de Pandoc. **Pas encore** ici, chacun étant une
 suite propre et non une refonte : bibliographie/citations (pas de moteur CSL Rust stable),
-math → OMML, vraies notes de bas de page Word, numérotation native des listes, hyperliens,
-images intégrées, héritage de style `--reference-doc`, et PPTX. Pour tout cela, gardez
+math → OMML, hyperliens, images intégrées, et PPTX. Pour tout cela, gardez
 [`md2star`](https://github.com/warith-harchaoui/md2star) comme voie « fidélité maximale ».
 
 ## Licence

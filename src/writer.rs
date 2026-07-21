@@ -4,6 +4,10 @@
 //! paragraph ourselves, we *own* the output — there is no post-hoc `styles.xml` surgery
 //! (the reason the Python md2star ships `postprocess.py`).
 //!
+//! Two entry points: [`build`] emits our own default styling; [`build_with_reference`]
+//! inherits styles/theme/fonts/page-setup from a reference `.docx` template (Pandoc's
+//! `--reference-doc`) and routes headings/quotes through its named styles when present.
+//!
 //! Since v0.2 the writer is stateful (a [`Writer`]) so it can emit two features that need
 //! document-level bookkeeping:
 //! - **Native Word list numbering** — real `numbering.xml` levels + `numPr` on paragraphs,
@@ -23,7 +27,7 @@
 //! inside table cells fall back to a text marker (`docx-rs` only collects footnotes from
 //! top-level document paragraphs); custom ordered-list start numbers render from 1.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use docx_rs::{
     AbstractNumbering, Docx, Footnote, IndentLevel, Level, LevelJc, LevelText, NumberFormat,
@@ -35,22 +39,36 @@ use crate::ast::{Block, Inline};
 
 /// Font used for inline code and code blocks.
 const MONO_FONT: &str = "Consolas";
-/// Abstract numbering id for bullet lists (defined once in [`Writer::new`]).
-const BULLET_ABSTRACT: usize = 0;
-/// Abstract numbering id for ordered/decimal lists.
-const DECIMAL_ABSTRACT: usize = 1;
-/// The single numbering *instance* shared by every bullet list (bullets don't count, so
-/// sharing one instance is harmless and keeps the numbering part small).
-const BULLET_NUM_ID: usize = 1;
 /// Word supports nine list levels (0..=8); deeper nesting is clamped to the last.
 const MAX_LEVEL: usize = 8;
+/// The deepest heading level Word ships a built-in `HeadingN` style for; `#######`+ clamps here.
+const MAX_HEADING_STYLE: u8 = 6;
 
-/// Build a complete [`Docx`] from a parsed document.
+/// Build a complete [`Docx`] from a parsed document, using our own default styling.
 ///
 /// Footnote *definitions* are indexed up front and pulled in at each reference site, so a
 /// definition may sit anywhere in the source relative to its reference(s).
 pub fn build(blocks: &[Block]) -> Docx {
-    let mut writer = Writer::new();
+    render(Writer::new(), blocks)
+}
+
+/// Build a [`Docx`] whose styles, theme, fonts and page setup are inherited from a reference
+/// `template` (the `--reference-doc` feature — Pandoc parity).
+///
+/// The template's *body content* is discarded; only its **styling** is kept. Headings and
+/// block quotes are then emitted through the template's named styles (`Heading1`…`Heading6`,
+/// `Quote`) when those styles exist, falling back to our inline formatting when they don't —
+/// so a document converted against a house template comes out looking like that template.
+pub fn build_with_reference(blocks: &[Block], template: Docx) -> Docx {
+    render(Writer::with_reference(template), blocks)
+}
+
+/// Shared render loop: index footnote definitions, then emit every non-definition block.
+///
+/// Both [`build`] and [`build_with_reference`] differ only in how their [`Writer`] is
+/// constructed; the traversal that turns blocks into paragraphs is identical, so it lives
+/// here once.
+fn render(mut writer: Writer, blocks: &[Block]) -> Docx {
     // Index footnote definitions up front so a reference can precede its definition.
     writer.index_footnotes(blocks);
     for block in blocks {
@@ -67,30 +85,85 @@ pub fn build(blocks: &[Block]) -> Docx {
 struct Writer {
     /// `Option` so builder methods (which consume `self`) can be threaded through `take`.
     docx: Option<Docx>,
-    /// Next ordered-list numbering instance id to hand out (bullets reuse [`BULLET_NUM_ID`]).
+    /// Next ordered-list numbering instance id to hand out (bullets reuse [`Writer::bullet_num_id`]).
     next_num_id: usize,
     /// Next footnote id — our own counter, so output is reproducible run to run.
     next_footnote_id: usize,
     /// Next paragraph id (`w14:paraId`) — see [`Writer::new_paragraph`] for why we own it.
     next_para_id: usize,
+    /// Abstract-numbering id for ordered/decimal lists. A field (not a const) because a
+    /// reference template may already use low ids, so [`Writer::with_reference`] offsets ours
+    /// upward; each ordered list mints an instance pointing back at this abstract id.
+    decimal_abstract_id: usize,
+    /// The single numbering *instance* shared by every bullet list (bullets don't count, so
+    /// sharing one instance is harmless and keeps the numbering part small).
+    bullet_num_id: usize,
+    /// Whether to emit headings/quotes through the template's named styles (reference mode)
+    /// instead of our inline bold/size formatting.
+    use_named_styles: bool,
+    /// Style ids present in the reference template, so we can fall back to inline formatting
+    /// for any named style the template happens not to define. Empty without a template.
+    styles: HashSet<String>,
     /// Footnote label → its definition's block content.
     footnote_defs: HashMap<String, Vec<Block>>,
 }
 
 impl Writer {
-    /// Create the document and register the two abstract numberings (bullet + decimal) plus
-    /// the shared bullet instance.
+    /// A writer with our own default styling (no reference template).
     fn new() -> Self {
-        let docx = Docx::new()
-            .add_abstract_numbering(bullet_abstract())
-            .add_abstract_numbering(decimal_abstract())
-            .add_numbering(Numbering::new(BULLET_NUM_ID, BULLET_ABSTRACT));
+        // No template: numbering ids start at 0, headings/quotes use inline formatting.
+        Self::assemble(Docx::new(), 0, false, HashSet::new())
+    }
+
+    /// A writer that inherits styling from a reference `template` (the `--reference-doc` path).
+    ///
+    /// Starting from the template's own [`Docx`] carries its styles, theme, fonts and — via the
+    /// untouched `document.section_property` — its page size and margins. We only clear the
+    /// template's body paragraphs; our converted content replaces them.
+    fn with_reference(mut template: Docx) -> Self {
+        // Remember which named styles the template actually defines, so heading/quote emission
+        // can fall back to inline formatting for any that are missing.
+        let styles: HashSet<String> = template
+            .styles
+            .styles
+            .iter()
+            .map(|s| s.style_id.clone())
+            .collect();
+        // Discard the template's placeholder body; keep everything else (styles, section setup).
+        template.document.children.clear();
+        // Offset our numbering definitions above anything the template already declares.
+        let num_base = numbering_base(&template);
+        Self::assemble(template, num_base, true, styles)
+    }
+
+    /// Register our bullet + decimal abstract numberings and the shared bullet instance on
+    /// `docx`, offsetting every id by `num_base` so they never collide with a template's own
+    /// numbering. Shared by both constructors.
+    fn assemble(
+        docx: Docx,
+        num_base: usize,
+        use_named_styles: bool,
+        styles: HashSet<String>,
+    ) -> Self {
+        let bullet_abstract_id = num_base;
+        let decimal_abstract_id = num_base + 1;
+        // The bullet instance may reuse the decimal abstract's id: `abstractNumId` and `numId`
+        // are separate OOXML namespaces (this mirrors the no-template default where both are 1).
+        let bullet_num_id = num_base + 1;
+        let docx = docx
+            .add_abstract_numbering(bullet_abstract(bullet_abstract_id))
+            .add_abstract_numbering(decimal_abstract(decimal_abstract_id))
+            .add_numbering(Numbering::new(bullet_num_id, bullet_abstract_id));
         Writer {
             docx: Some(docx),
             // Ordered-list instances start after the reserved bullet instance.
-            next_num_id: BULLET_NUM_ID + 1,
+            next_num_id: bullet_num_id + 1,
             next_footnote_id: 1,
             next_para_id: 1,
+            decimal_abstract_id,
+            bullet_num_id,
+            use_named_styles,
+            styles,
             footnote_defs: HashMap::new(),
         }
     }
@@ -167,22 +240,43 @@ impl Writer {
     fn write_block(&mut self, block: &Block, depth: usize) {
         match block {
             Block::Heading { level, content } => {
-                let size = heading_half_points(*level);
-                let mut paragraph = self.new_paragraph();
-                // Headings are bold; carry the level's size onto each run.
-                for run in self.inline_runs(content, true, false, true) {
-                    paragraph = paragraph.add_run(run.size(size));
+                // Word ships built-in styles Heading1..Heading6; clamp deeper levels onto 6.
+                let style_id = format!("Heading{}", (*level).min(MAX_HEADING_STYLE));
+                if self.use_named_styles && self.styles.contains(&style_id) {
+                    // Reference mode: let the template's Heading style own size/weight/colour,
+                    // so the heading looks like the template rather than our inline defaults.
+                    let mut paragraph = self.new_paragraph().style(&style_id);
+                    for run in self.inline_runs(content, false, false, true) {
+                        paragraph = paragraph.add_run(run);
+                    }
+                    self.push_paragraph(paragraph);
+                } else {
+                    // Fallback (no template, or the style is absent): bold + a per-level size.
+                    let size = heading_half_points(*level);
+                    let mut paragraph = self.new_paragraph();
+                    for run in self.inline_runs(content, true, false, true) {
+                        paragraph = paragraph.add_run(run.size(size));
+                    }
+                    self.push_paragraph(paragraph);
                 }
-                self.push_paragraph(paragraph);
             }
             Block::Paragraph(inlines) => {
                 let paragraph = self.paragraph(inlines, false, false, true);
                 self.push_paragraph(paragraph);
             }
             Block::CodeBlock { code, .. } => self.write_code_block(code),
-            // Block quotes recurse (no indent/border yet — a tracked follow-up).
+            // Block quotes: in reference mode, style their direct paragraphs with the template's
+            // "Quote" style; otherwise recurse plainly (no indent/border yet — a tracked follow-up).
             Block::BlockQuote(inner) => {
                 for child in inner {
+                    if self.use_named_styles && self.styles.contains("Quote") {
+                        if let Block::Paragraph(inlines) = child {
+                            let paragraph =
+                                self.paragraph(inlines, false, false, true).style("Quote");
+                            self.push_paragraph(paragraph);
+                            continue;
+                        }
+                    }
                     self.write_block(child, depth);
                 }
             }
@@ -217,10 +311,10 @@ impl Writer {
         // Pick (or mint) the numbering instance for this list.
         let num_id = if ordered {
             let id = self.alloc_num_id();
-            self.register_numbering(Numbering::new(id, DECIMAL_ABSTRACT));
+            self.register_numbering(Numbering::new(id, self.decimal_abstract_id));
             id
         } else {
-            BULLET_NUM_ID
+            self.bullet_num_id
         };
         let level = depth.min(MAX_LEVEL);
 
@@ -382,9 +476,23 @@ impl Writer {
 
 // Free helpers below don't need writer state.
 
+/// One past the highest `abstractNumId`/`numId` a template already declares — the offset that
+/// keeps our added numbering definitions from colliding with the template's. Zero for an empty
+/// (no-template) document, which is why the default writer starts its ids at 0.
+fn numbering_base(template: &Docx) -> usize {
+    let abstract_max = template.numberings.abstract_nums.iter().map(|n| n.id).max();
+    let num_max = template.numberings.numberings.iter().map(|n| n.id).max();
+    // `chain` folds both maxima together; `+ 1` lands on the first free id above all of them.
+    abstract_max
+        .into_iter()
+        .chain(num_max)
+        .max()
+        .map_or(0, |m| m + 1)
+}
+
 /// Build the abstract numbering for bullet lists: nine levels of alternating glyphs.
-fn bullet_abstract() -> AbstractNumbering {
-    let mut abstract_num = AbstractNumbering::new(BULLET_ABSTRACT);
+fn bullet_abstract(id: usize) -> AbstractNumbering {
+    let mut abstract_num = AbstractNumbering::new(id);
     for level in 0..=MAX_LEVEL {
         // Cycle filled/hollow/square bullets so nested levels read differently.
         let glyph = match level % 3 {
@@ -402,8 +510,8 @@ fn bullet_abstract() -> AbstractNumbering {
 }
 
 /// Build the abstract numbering for ordered lists: nine decimal levels (`%1.`, `%2.`, …).
-fn decimal_abstract() -> AbstractNumbering {
-    let mut abstract_num = AbstractNumbering::new(DECIMAL_ABSTRACT);
+fn decimal_abstract(id: usize) -> AbstractNumbering {
+    let mut abstract_num = AbstractNumbering::new(id);
     for level in 0..=MAX_LEVEL {
         // `%N` references the counter of the Nth level, so each depth prints its own number.
         let text = format!("%{}.", level + 1);

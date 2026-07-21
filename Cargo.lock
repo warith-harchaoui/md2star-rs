@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "md2star-rs"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "clap",
  "docx-rs",
