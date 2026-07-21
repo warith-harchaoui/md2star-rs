@@ -106,7 +106,7 @@ fn ordered_list_uses_native_numbering() {
 #[test]
 fn conversion_is_idempotent() {
     // Idempotence/determinism: the same Markdown must produce byte-identical output every
-    // run — no timestamps, and footnote/numbering ids come from per-document counters.
+    // run — no timestamps, and footnote/numbering/paragraph ids come from per-document counters.
     let markdown = "# Doc\n\n1. one[^a]\n2. two\n\n- bullet\n\n[^a]: note";
     let first = markdown_to_docx_bytes(markdown).expect("conversion succeeds");
     let second = markdown_to_docx_bytes(markdown).expect("conversion succeeds");
@@ -114,6 +114,52 @@ fn conversion_is_idempotent() {
         first, second,
         "identical input produced differing .docx bytes"
     );
+}
+
+#[test]
+fn conversion_is_idempotent_under_concurrency() {
+    // Regression guard for the process-global `w14:paraId` counter inside docx-rs: because
+    // paragraph ids used to be drawn from a shared atomic, converting on several threads at
+    // once interleaved their id allocations and produced diverging bytes for identical input
+    // (flaky CI on macOS + Windows). Our writer now mints ids from a per-document counter, so
+    // concurrency must not matter. We hammer the conversion from many threads and require a
+    // single distinct byte string across all of them.
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::thread;
+
+    let markdown = "# Doc\n\n1. one[^a]\n2. two\n\n- bullet\n\n[^a]: note";
+    // The canonical output every thread must reproduce exactly.
+    let reference = Arc::new(markdown_to_docx_bytes(markdown).expect("conversion succeeds"));
+
+    // Spawn a pool of threads, each doing several conversions, to force id-allocation races.
+    let mut handles = Vec::new();
+    for _ in 0..16 {
+        let reference = Arc::clone(&reference);
+        handles.push(thread::spawn(move || {
+            // Repeat inside the thread so allocations from sibling threads interleave heavily.
+            for _ in 0..8 {
+                let bytes = markdown_to_docx_bytes(markdown).expect("conversion succeeds");
+                assert_eq!(
+                    bytes, *reference,
+                    "concurrent conversion diverged from the reference bytes"
+                );
+            }
+        }));
+    }
+
+    // A dead thread means an assertion tripped; surface it as a test failure.
+    for handle in handles {
+        handle
+            .join()
+            .expect("worker thread panicked on a byte mismatch");
+    }
+
+    // Belt and braces: collect a fresh batch and confirm they collapse to one distinct value.
+    let distinct: HashSet<Vec<u8>> = (0..32)
+        .map(|_| markdown_to_docx_bytes(markdown).expect("conversion succeeds"))
+        .collect();
+    assert_eq!(distinct.len(), 1, "conversion is not byte-deterministic");
 }
 
 #[test]

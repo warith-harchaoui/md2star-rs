@@ -4,6 +4,24 @@ All notable changes to `md2star-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — unreleased
+
+Makes the v0.2.0 idempotence guarantee actually hold under concurrency — the fix that turns
+CI green on macOS and Windows.
+
+### Fixed
+- **Byte-idempotence under parallel conversions.** `docx-rs` stamps every paragraph with a
+  `w14:paraId` drawn from a **process-global atomic counter**. Because `cargo test` runs
+  tests in parallel, sibling threads interleaved their id allocations between a test's two
+  conversions, so identical Markdown produced *different* bytes — a flake that failed CI on
+  macOS + Windows (ubuntu happened to schedule differently) while passing when the test ran
+  alone. The writer now mints paragraph ids from its own **per-document counter** (mirroring
+  how footnote ids were already handled), removing the dependency on global mutable state.
+  Output is now byte-identical run-to-run *and* thread-to-thread.
+- New regression test `conversion_is_idempotent_under_concurrency` hammers the conversion
+  from 16 threads × 8 iterations and asserts a single distinct byte string, so the global
+  counter can never silently creep back in.
+
 ## [0.2.0] — unreleased
 
 Native Word list numbering and real footnotes — the two highest-leverage upgrades over the
@@ -18,9 +36,10 @@ v0.1 placeholders, both verified against the produced OOXML.
   into `word/footnotes.xml` (via `Run::add_footnote_reference`), replacing the v0.1 inline
   marker + trailing "Notes" section.
 - **Idempotence guarantee + test.** Footnote ids come from a per-document counter (not
-  `docx-rs`'s process-global `Footnote::new` id) and no timestamps are written, so the same
-  Markdown yields **byte-identical** `.docx` output every run. Covered by
-  `conversion_is_idempotent`.
+  `docx-rs`'s process-global `Footnote::new` id) and no timestamps are written. Covered by
+  `conversion_is_idempotent`. (This landed the footnote-id half; paragraph ids had the same
+  process-global problem and were finished in 0.2.1 — the two together make output truly
+  byte-identical, including under concurrency.)
 
 ### Fixed
 - Reader now captures **tight** list items / block quotes (CommonMark emits their text

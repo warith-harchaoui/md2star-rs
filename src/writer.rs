@@ -12,9 +12,11 @@
 //! - **Real Word footnotes** — `Run::add_footnote_reference`, which `docx-rs` collects into
 //!   `word/footnotes.xml`, instead of an inline `[n]` marker plus a trailing section.
 //!
-//! Determinism / idempotence: footnote ids come from our own per-document counter (not
-//! `Footnote::new`'s process-global one) and no timestamps are written, so the same
-//! Markdown yields byte-identical `.docx` output on every run — see `tests/convert.rs`.
+//! Determinism / idempotence: both footnote ids *and* paragraph ids (`w14:paraId`) come from
+//! our own per-document counters — not `docx-rs`'s process-global atomics — and no timestamps
+//! are written, so the same Markdown yields byte-identical `.docx` output on every run, even
+//! when conversions run concurrently on multiple threads. See [`Writer::new_paragraph`] and
+//! `tests/convert.rs`.
 //!
 //! Remaining v0.1 limitations still open (tracked follow-ups): links/images render
 //! text/alt only; block quotes recurse without an indent/border; footnote references
@@ -69,6 +71,8 @@ struct Writer {
     next_num_id: usize,
     /// Next footnote id — our own counter, so output is reproducible run to run.
     next_footnote_id: usize,
+    /// Next paragraph id (`w14:paraId`) — see [`Writer::new_paragraph`] for why we own it.
+    next_para_id: usize,
     /// Footnote label → its definition's block content.
     footnote_defs: HashMap<String, Vec<Block>>,
 }
@@ -86,6 +90,7 @@ impl Writer {
             // Ordered-list instances start after the reserved bullet instance.
             next_num_id: BULLET_NUM_ID + 1,
             next_footnote_id: 1,
+            next_para_id: 1,
             footnote_defs: HashMap::new(),
         }
     }
@@ -136,12 +141,34 @@ impl Writer {
         id
     }
 
+    /// A fresh paragraph carrying a deterministic, per-document `w14:paraId`.
+    ///
+    /// `docx-rs` stamps every `Paragraph::new()` with an id drawn from a **process-global**
+    /// atomic counter. Two conversions in the same process — or, worse, concurrent threads
+    /// (`cargo test` runs tests in parallel) — therefore interleave their id allocations and
+    /// emit *different* paragraph ids for the *same* input, breaking byte-for-byte idempotence.
+    /// We sidestep that global state entirely by minting ids from our own per-document counter,
+    /// so identical Markdown always yields identical bytes. Every paragraph the writer creates
+    /// MUST go through here (never bare `Paragraph::new()`) or it would fall back to the global id.
+    fn new_paragraph(&mut self) -> Paragraph {
+        let id = self.alloc_para_id();
+        // Match docx-rs's own 8-digit zero-padded hex format so the id looks native.
+        Paragraph::new().id(format!("{id:08x}"))
+    }
+
+    /// Allocate the next (deterministic) paragraph id.
+    fn alloc_para_id(&mut self) -> usize {
+        let id = self.next_para_id;
+        self.next_para_id += 1;
+        id
+    }
+
     /// Emit one block. `depth` is the current list-nesting level (0 at the top).
     fn write_block(&mut self, block: &Block, depth: usize) {
         match block {
             Block::Heading { level, content } => {
                 let size = heading_half_points(*level);
-                let mut paragraph = Paragraph::new();
+                let mut paragraph = self.new_paragraph();
                 // Headings are bold; carry the level's size onto each run.
                 for run in self.inline_runs(content, true, false, true) {
                     paragraph = paragraph.add_run(run.size(size));
@@ -169,15 +196,13 @@ impl Writer {
                 self.push_table(table);
             }
             Block::ThematicBreak => {
-                self.push_paragraph(
-                    Paragraph::new().add_run(Run::new().add_text("————————————————")),
-                );
+                let paragraph = self.new_paragraph();
+                self.push_paragraph(paragraph.add_run(Run::new().add_text("————————————————")));
             }
             // Definitions are inlined at their reference; a stray one renders as text.
             Block::FootnoteDef { label, .. } => {
-                self.push_paragraph(
-                    Paragraph::new().add_run(Run::new().add_text(format!("[{label}]"))),
-                );
+                let paragraph = self.new_paragraph();
+                self.push_paragraph(paragraph.add_run(Run::new().add_text(format!("[{label}]"))));
             }
         }
     }
@@ -204,8 +229,9 @@ impl Writer {
             if let Some(Block::Paragraph(inlines)) =
                 item.iter().find(|b| matches!(b, Block::Paragraph(_)))
             {
-                let mut paragraph =
-                    Paragraph::new().numbering(NumberingId::new(num_id), IndentLevel::new(level));
+                let mut paragraph = self
+                    .new_paragraph()
+                    .numbering(NumberingId::new(num_id), IndentLevel::new(level));
                 for run in self.inline_runs(inlines, false, false, true) {
                     paragraph = paragraph.add_run(run);
                 }
@@ -229,7 +255,8 @@ impl Writer {
     fn write_code_block(&mut self, code: &str) {
         // `lines()` drops a trailing newline; an empty block yields no paragraphs.
         for line in code.lines() {
-            self.push_paragraph(Paragraph::new().add_run(mono(line)));
+            let paragraph = self.new_paragraph();
+            self.push_paragraph(paragraph.add_run(mono(line)));
         }
     }
 
@@ -241,7 +268,7 @@ impl Writer {
         italic: bool,
         footnotes: bool,
     ) -> Paragraph {
-        let mut paragraph = Paragraph::new();
+        let mut paragraph = self.new_paragraph();
         for run in self.inline_runs(inlines, bold, italic, footnotes) {
             paragraph = paragraph.add_run(run);
         }
@@ -323,7 +350,7 @@ impl Writer {
         }
         // A footnote must have at least one paragraph or Word complains; guarantee one.
         if paragraphs.is_empty() {
-            paragraphs.push(Paragraph::new());
+            paragraphs.push(self.new_paragraph());
         }
         paragraphs
     }
