@@ -12,9 +12,10 @@ Reference-doc styling — the last big gap versus the Pandoc-backed original.
 - **`--reference-doc template.docx`** (Pandoc parity). The output inherits the template's
   styles, theme, fonts and page setup (size + margins, via the template's section
   properties); the template's body content is discarded. Headings and block quotes are
-  emitted through the template's **named styles** (`Heading1`…`Heading6`, `Quote`) when they
-  exist, falling back to the inline bold/size formatting when they don't — so converting
-  against a house template produces a document that looks like that template.
+  emitted through the template's **named styles** when they exist, falling back to the inline
+  formatting when they don't — so converting against a house template produces a document that
+  looks like that template. Styles mapped: headings → `Heading1`…`Heading6`, block quotes →
+  `Quote`, code blocks → `SourceCode` (else `HTMLPreformatted`), list items → `ListParagraph`.
   - Library API: `markdown_to_docx_bytes_with_reference(md, &template_bytes)` and
     `convert_path_with_reference(input, output, reference)`.
   - New `Error::Template` variant distinguishes "the reference isn't a valid `.docx`" from a

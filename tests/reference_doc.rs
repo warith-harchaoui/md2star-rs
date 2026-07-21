@@ -146,6 +146,66 @@ fn list_numbering_does_not_collide_with_template() {
 }
 
 #[test]
+fn code_block_uses_source_code_style() {
+    // Template defines Pandoc's "SourceCode" style → each code line references it.
+    let template = template_with_style("SourceCode");
+    let bytes =
+        markdown_to_docx_bytes_with_reference("```\nlet x = 1;\n```", &template).expect("converts");
+    let doc = document_xml(&bytes);
+    assert!(
+        doc.contains("w:val=\"SourceCode\""),
+        "code block did not use the SourceCode style: {doc}"
+    );
+    assert!(doc.contains("let x = 1;"), "code text missing");
+}
+
+#[test]
+fn code_block_falls_back_to_html_preformatted() {
+    // No "SourceCode", but Word's built-in "HTMLPreformatted" is present → use it.
+    let template = template_with_style("HTMLPreformatted");
+    let bytes =
+        markdown_to_docx_bytes_with_reference("```\ncode\n```", &template).expect("converts");
+    let doc = document_xml(&bytes);
+    assert!(
+        doc.contains("w:val=\"HTMLPreformatted\""),
+        "code block did not fall back to HTMLPreformatted: {doc}"
+    );
+}
+
+#[test]
+fn code_block_without_a_code_style_stays_monospace() {
+    // Template defines an unrelated style only → the code block references no paragraph style
+    // and keeps our monospace run (the Consolas font).
+    let template = template_with_style("Heading1");
+    let bytes =
+        markdown_to_docx_bytes_with_reference("```\ncode\n```", &template).expect("converts");
+    let doc = document_xml(&bytes);
+    assert!(
+        !doc.contains("w:val=\"SourceCode\"") && !doc.contains("w:val=\"HTMLPreformatted\""),
+        "referenced a code style the template never defined: {doc}"
+    );
+    assert!(
+        doc.contains("Consolas"),
+        "code block lost its monospace font: {doc}"
+    );
+}
+
+#[test]
+fn list_items_use_list_paragraph_style() {
+    // Template defines "ListParagraph" → ordered-list items carry both that style and our
+    // native numbering (the style and the numbering are complementary, not exclusive).
+    let template = template_with_style("ListParagraph");
+    let bytes =
+        markdown_to_docx_bytes_with_reference("1. one\n2. two", &template).expect("converts");
+    let doc = document_xml(&bytes);
+    assert!(
+        doc.contains("w:val=\"ListParagraph\""),
+        "list item did not use the ListParagraph style: {doc}"
+    );
+    assert!(doc.contains("numId"), "list item lost its numbering: {doc}");
+}
+
+#[test]
 fn reference_conversion_is_idempotent() {
     // The determinism guarantee holds on the reference path too: same Markdown + same template
     // → byte-identical output (paragraph/footnote/numbering ids all come from per-doc counters).

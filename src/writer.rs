@@ -6,7 +6,9 @@
 //!
 //! Two entry points: [`build`] emits our own default styling; [`build_with_reference`]
 //! inherits styles/theme/fonts/page-setup from a reference `.docx` template (Pandoc's
-//! `--reference-doc`) and routes headings/quotes through its named styles when present.
+//! `--reference-doc`) and routes headings (`Heading1`…`Heading6`), block quotes (`Quote`),
+//! code blocks (`SourceCode`/`HTMLPreformatted`) and list items (`ListParagraph`) through the
+//! template's named styles when present, falling back to inline formatting otherwise.
 //!
 //! Since v0.2 the writer is stateful (a [`Writer`]) so it can emit two features that need
 //! document-level bookkeeping:
@@ -55,10 +57,11 @@ pub fn build(blocks: &[Block]) -> Docx {
 /// Build a [`Docx`] whose styles, theme, fonts and page setup are inherited from a reference
 /// `template` (the `--reference-doc` feature — Pandoc parity).
 ///
-/// The template's *body content* is discarded; only its **styling** is kept. Headings and
-/// block quotes are then emitted through the template's named styles (`Heading1`…`Heading6`,
-/// `Quote`) when those styles exist, falling back to our inline formatting when they don't —
-/// so a document converted against a house template comes out looking like that template.
+/// The template's *body content* is discarded; only its **styling** is kept. Headings, block
+/// quotes, code blocks and list items are then emitted through the template's named styles
+/// (`Heading1`…`Heading6`, `Quote`, `SourceCode`/`HTMLPreformatted`, `ListParagraph`) when
+/// those styles exist, falling back to our inline formatting when they don't — so a document
+/// converted against a house template comes out looking like that template.
 pub fn build_with_reference(blocks: &[Block], template: Docx) -> Docx {
     render(Writer::with_reference(template), blocks)
 }
@@ -236,16 +239,25 @@ impl Writer {
         id
     }
 
+    /// The template style id to apply for `id`, or `None` to use our inline formatting.
+    ///
+    /// Returns `Some` only in reference mode *and* when the template actually declares that
+    /// style — the single gate every named-style decision (headings, quotes, code, lists)
+    /// routes through, so "reference mode + style present" is expressed in exactly one place.
+    fn style_for(&self, id: &str) -> Option<String> {
+        (self.use_named_styles && self.styles.contains(id)).then(|| id.to_string())
+    }
+
     /// Emit one block. `depth` is the current list-nesting level (0 at the top).
     fn write_block(&mut self, block: &Block, depth: usize) {
         match block {
             Block::Heading { level, content } => {
                 // Word ships built-in styles Heading1..Heading6; clamp deeper levels onto 6.
                 let style_id = format!("Heading{}", (*level).min(MAX_HEADING_STYLE));
-                if self.use_named_styles && self.styles.contains(&style_id) {
+                if let Some(style) = self.style_for(&style_id) {
                     // Reference mode: let the template's Heading style own size/weight/colour,
                     // so the heading looks like the template rather than our inline defaults.
-                    let mut paragraph = self.new_paragraph().style(&style_id);
+                    let mut paragraph = self.new_paragraph().style(&style);
                     for run in self.inline_runs(content, false, false, true) {
                         paragraph = paragraph.add_run(run);
                     }
@@ -269,13 +281,12 @@ impl Writer {
             // "Quote" style; otherwise recurse plainly (no indent/border yet — a tracked follow-up).
             Block::BlockQuote(inner) => {
                 for child in inner {
-                    if self.use_named_styles && self.styles.contains("Quote") {
-                        if let Block::Paragraph(inlines) = child {
-                            let paragraph =
-                                self.paragraph(inlines, false, false, true).style("Quote");
-                            self.push_paragraph(paragraph);
-                            continue;
-                        }
+                    if let (Block::Paragraph(inlines), Some(style)) =
+                        (child, self.style_for("Quote"))
+                    {
+                        let paragraph = self.paragraph(inlines, false, false, true).style(&style);
+                        self.push_paragraph(paragraph);
+                        continue;
                     }
                     self.write_block(child, depth);
                 }
@@ -317,6 +328,9 @@ impl Writer {
             self.bullet_num_id
         };
         let level = depth.min(MAX_LEVEL);
+        // Word tags list items with its built-in "ListParagraph" style; apply it in reference
+        // mode so items pick up the template's list spacing/indent on top of our numbering.
+        let list_style = self.style_for("ListParagraph");
 
         for item in items {
             // The item's first paragraph becomes the numbered line.
@@ -326,6 +340,9 @@ impl Writer {
                 let mut paragraph = self
                     .new_paragraph()
                     .numbering(NumberingId::new(num_id), IndentLevel::new(level));
+                if let Some(ref style) = list_style {
+                    paragraph = paragraph.style(style);
+                }
                 for run in self.inline_runs(inlines, false, false, true) {
                     paragraph = paragraph.add_run(run);
                 }
@@ -346,10 +363,22 @@ impl Writer {
     }
 
     /// Emit a code block as one monospace paragraph per line so breaks survive.
+    ///
+    /// In reference mode, tag each line with the template's code style when it defines one —
+    /// `SourceCode` (Pandoc's own reference-doc convention) preferred, `HTMLPreformatted`
+    /// (Word's built-in) as a fallback — so code blocks inherit the template's code styling
+    /// (background, border, font). Absent both, we keep our plain monospace run.
     fn write_code_block(&mut self, code: &str) {
+        // Resolve the code style once for the whole block (all lines share it).
+        let style = self
+            .style_for("SourceCode")
+            .or_else(|| self.style_for("HTMLPreformatted"));
         // `lines()` drops a trailing newline; an empty block yields no paragraphs.
         for line in code.lines() {
-            let paragraph = self.new_paragraph();
+            let mut paragraph = self.new_paragraph();
+            if let Some(ref style) = style {
+                paragraph = paragraph.style(style);
+            }
             self.push_paragraph(paragraph.add_run(mono(line)));
         }
     }
