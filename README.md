@@ -2,8 +2,8 @@
 
 [🇫🇷 LISEZMOI](LISEZMOI.md) · [🇬🇧 README](README.md)
 
-**A pure-Rust Markdown → DOCX writer. No Pandoc, no subprocess, no runtime dependency — a
-single static binary that runs on every OS and device.**
+**A pure-Rust Markdown → DOCX & PPTX writer. No Pandoc, no subprocess, no runtime dependency —
+single static binaries that run on every OS and device.**
 
 By [Warith HARCHAOUI](https://linkedin.com/in/warith-harchaoui)
 
@@ -40,6 +40,7 @@ See [`scripts/brew.sh`](scripts/brew.sh) for a Homebrew-based Rust setup on macO
 md2docx report.md                              # → report.docx (next to the input)
 md2docx report.md -o out/final.docx
 md2docx report.md --reference-doc house.docx   # style the output after house.docx
+md2pptx talk.md                                # → talk.pptx (each `#` heading = a slide)
 ```
 
 `--reference-doc` inherits the template's styles, theme, fonts and page setup, and routes
@@ -56,11 +57,18 @@ let bytes = md2star_rs::markdown_to_docx_bytes("Hello **world**").unwrap();
 // Style the output after a reference template read from disk.
 let template = std::fs::read("house.docx").unwrap();
 let styled = md2star_rs::markdown_to_docx_bytes_with_reference("# Title", &template).unwrap();
+
+// Or produce a PowerPoint deck — each `#` heading becomes a slide.
+let deck = md2star_rs::markdown_to_pptx_bytes("# Slide 1\n\n- point\n- point").unwrap();
 ```
 
 More recipes in [`EXAMPLES.md`](EXAMPLES.md).
 
-## What works today (v0.3)
+## What works today (v0.4)
+
+**Two backends** off one reader/AST: `md2docx` (DOCX) and `md2pptx` (PPTX). The DOCX table
+below is the detailed surface; `md2pptx` maps each `#` heading to a slide and flattens the body
+to bullets (ordered → numbered, nested → sub-bullets, quotes/code/tables → bullet lines).
 
 | Markdown | DOCX output |
 |---|---|
@@ -74,9 +82,10 @@ More recipes in [`EXAMPLES.md`](EXAMPLES.md).
 | Footnotes `[^x]` | **Real Word footnotes** (`word/footnotes.xml`) |
 | Links / images | Visible text / alt placeholder |
 
-**Idempotent by construction:** the same Markdown produces byte-identical `.docx` output on
-every run — even across concurrent threads (no timestamps; footnote, numbering *and*
-paragraph ids all come from per-document counters, never a process-global one).
+**Idempotent by construction:** the same Markdown produces byte-identical output on every run —
+`.docx` *and* `.pptx`, even across concurrent threads. DOCX ids come from per-document counters
+(never a process-global one); PPTX output is re-packed with a fixed timestamp so `ppt-rs`'s
+wall-clock stamp can't leak in.
 
 ## Scope & trade-offs versus Pandoc `md2star`
 
@@ -86,11 +95,12 @@ a clean follow-up, none a redesign:
 - **Bibliography / citations** — no stable Rust CSL processor exists yet
   (`citeproc-rs` is WIP/nightly), so `[@key]` citations are out of scope for now.
 - **Math → OMML** — `latex2mathml` gets us to MathML, but MathML→OMML has no Rust crate.
-- **Hyperlink relations**, **embedded images**, and **PPTX** — the Python `md2star` remains
-  the "max-fidelity" path for those; keep it for DOCX+PPTX+PDF with math and citations.
+- **Hyperlink relations** and **embedded images** — the Python `md2star` remains the
+  "max-fidelity" path for those (and for DOCX/PPTX with math and citations). The PPTX backend is
+  intentionally text-first: it flattens inline formatting and does not yet embed images or shapes.
 
 If you need those, use [`md2star`](https://github.com/warith-harchaoui/md2star). If you need
-a zero-install single binary for straightforward Markdown → Word, use this.
+a zero-install single binary for straightforward Markdown → Word or PowerPoint, use this.
 
 ## Development
 

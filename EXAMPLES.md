@@ -46,6 +46,41 @@ assert_eq!(&bytes[..2], b"PK");
 
 To convert a file on disk directly with a template, use `convert_path_with_reference`.
 
+## CLI: Markdown → PowerPoint slides
+
+Each level-1 heading (`#`) starts a slide; the body until the next `#` becomes its bullets:
+
+```bash
+md2pptx talk.md
+# wrote talk.pptx
+md2pptx talk.md -o build/keynote.pptx
+# wrote build/keynote.pptx
+```
+
+Given this Markdown, `md2pptx` produces a two-slide deck ("Intro" and "Results"):
+
+```markdown
+# Intro
+
+- why this matters
+- what we tried
+
+# Results
+
+1. faster builds
+2. fewer bugs
+```
+
+## Library: Markdown → PPTX bytes
+
+```rust
+let bytes = md2star_rs::markdown_to_pptx_bytes("# Slide\n\n- one\n- two").unwrap();
+// A .pptx is a zip, so the buffer starts with the zip magic.
+assert_eq!(&bytes[..2], b"PK");
+```
+
+`markdown_to_pptx_file` and `convert_path_to_pptx` are the on-disk counterparts.
+
 ## Library: string → file
 
 ```rust

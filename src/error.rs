@@ -23,6 +23,12 @@ pub enum Error {
     /// (an `Io`) apart from "the file exists but isn't a usable Word document" (this).
     #[error("invalid reference document: {0}")]
     Template(String),
+
+    /// `ppt-rs` failed to generate/pack the `.pptx`. Flattened to a message at the boundary
+    /// (its error type is distinct from `docx-rs`'s), and kept separate from [`Error::Docx`]
+    /// so the PPTX and DOCX paths report failures under their own name.
+    #[error("failed to write PPTX: {0}")]
+    Pptx(String),
 }
 
 /// Crate-wide result alias so signatures read `Result<T>` rather than the full path.

@@ -7,19 +7,19 @@
 # the scope/trade-offs versus the Pandoc-backed original.
 [package]
 name = "md2star-rs"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.74"
 license = "Apache-2.0"
-description = "Pure-Rust Markdown → DOCX writer (pulldown-cmark → AST → docx-rs). A Pandoc-free spin-off of md2star."
+description = "Pure-Rust Markdown → DOCX and PPTX writer (pulldown-cmark → AST → docx-rs / ppt-rs). A Pandoc-free spin-off of md2star."
 repository = "https://github.com/warith-harchaoui/md2star-rs"
 authors = ["Warith HARCHAOUI <warith@deraison.ai>"]
 readme = "README.md"
-keywords = ["markdown", "docx", "word", "converter", "pandoc-free"]
+keywords = ["markdown", "docx", "pptx", "powerpoint", "pandoc-free"]
 categories = ["command-line-utilities", "text-processing"]
 
-# The library is the reusable core (also the future WASM entry point); the binary is the
-# `md2docx` CLI that mirrors the original md2star command name.
+# The library is the reusable core (also the future WASM entry point); the two binaries are
+# the `md2docx` / `md2pptx` CLIs that mirror the original md2star command names.
 [lib]
 name = "md2star_rs"
 path = "src/lib.rs"
@@ -28,6 +28,10 @@ path = "src/lib.rs"
 name = "md2docx"
 path = "src/main.rs"
 
+[[bin]]
+name = "md2pptx"
+path = "src/bin/md2pptx.rs"
+
 [dependencies]
 # CommonMark + GFM reader. We drive it in *event* mode and fold the flat event stream into
 # our own block/inline AST, exactly the reader/writer seam Pandoc uses internally.
@@ -35,11 +39,20 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # The OOXML writer. Unlike Pandoc we own `styles.xml`, so nothing gets stripped after the
 # fact — this is what makes the original md2star's `postprocess.py` zip-surgery unnecessary.
 docx-rs = "0.4"
+# The PresentationML (.pptx) writer for `md2pptx`. Its lean default feature set (thiserror,
+# uuid, xml-rs, zip) is the same league as docx-rs; the heavy `cli`/`mcp`/`web2ppt` features
+# stay off. It ships the slide-master/layout/theme scaffolding a deck needs, and its output is
+# byte-deterministic (fixed doc timestamp, stable ids) so md2pptx stays idempotent like md2docx.
+ppt-rs = { version = "0.2", default-features = false }
 # Typed error enums for the library surface — no stringly-typed errors leaking to callers.
 thiserror = "2"
 # Argument parsing for the `md2docx` binary (derive keeps the CLI declaration close to the
 # struct it fills). Only the binary uses it; the library stays dependency-light.
 clap = { version = "4", features = ["derive"] }
+# Used by the PPTX path to re-pack ppt-rs's output deterministically: ppt-rs stamps a
+# wall-clock timestamp into docProps/core.xml, so we rewrite that one part to a fixed value
+# and repack with a fixed entry mtime — restoring byte-idempotence. (Also our test dev-dep.)
+zip = "2"
 
 [dev-dependencies]
 # Write generated .docx files into a throwaway dir instead of polluting the repo.

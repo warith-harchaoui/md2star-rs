@@ -1,26 +1,30 @@
-//! `md2star-rs` — a pure-Rust Markdown → DOCX writer, no Pandoc, no subprocess.
+//! `md2star-rs` — a pure-Rust Markdown → DOCX / PPTX writer, no Pandoc, no subprocess.
 //!
 //! Module summary
 //! --------------
 //! The Python `md2star` is a thin wrapper around Pandoc. This crate keeps the same goal —
-//! Markdown in, a faithful `.docx` out — but reaches it entirely in Rust, so it compiles
-//! to a single static binary that runs on any OS/device with no Pandoc install:
+//! Markdown in, a faithful Office document out — but reaches it entirely in Rust, so it
+//! compiles to a single static binary that runs on any OS/device with no Pandoc install:
 //!
 //! ```text
-//! Markdown ──▶ reader (pulldown-cmark → AST) ──▶ writer (AST → docx-rs) ──▶ .docx
+//!                                       ┌──▶ writer   (AST → docx-rs) ──▶ .docx
+//! Markdown ──▶ reader (→ AST) ──────────┤
+//!                                       └──▶ pptx     (AST → ppt-rs)  ──▶ .pptx
 //! ```
 //!
 //! The named AST in the middle ([`ast`]) is the reader/writer seam Pandoc uses internally;
-//! it is what will let a second backend (Typst, HTML) slot in later without touching the
-//! reader. See `README.md` for the exact scope and the (deliberate) v0.1 limitations
+//! it is what lets a second backend ([`pptx`], and later Typst/HTML) slot in **without
+//! touching the reader**. See `README.md` for the exact scope and the (deliberate) limitations
 //! versus the Pandoc-backed original.
 //!
 //! # Examples
 //!
 //! ```no_run
 //! use std::path::Path;
-//! // Convert a Markdown string straight to a .docx on disk.
+//! // Convert a Markdown string straight to a .docx on disk...
 //! md2star_rs::markdown_to_docx_file("# Hi\n\nHello.", Path::new("out.docx")).unwrap();
+//! // ...or to a .pptx deck (each `#` heading becomes a slide).
+//! md2star_rs::markdown_to_pptx_file("# Slide 1\n\n- point", Path::new("out.pptx")).unwrap();
 //! ```
 
 #![forbid(unsafe_code)]
@@ -32,6 +36,7 @@ use std::path::Path;
 
 pub mod ast;
 pub mod error;
+pub mod pptx;
 pub mod reader;
 pub mod writer;
 
@@ -132,4 +137,48 @@ pub fn convert_path_with_reference(input: &Path, output: &Path, reference: &Path
     let bytes = markdown_to_docx_bytes_with_reference(&markdown, &template)?;
     fs::write(output, bytes)?;
     Ok(())
+}
+
+/// Convert a Markdown string to `.pptx` bytes in memory.
+///
+/// Each level-1 heading (`#`) starts a new slide; the body until the next `#` becomes that
+/// slide's bullet points. See [`pptx`] for the full Markdown-to-slides mapping.
+///
+/// # Errors
+///
+/// Returns [`Error::Pptx`] if the presentation cannot be assembled or packed.
+///
+/// # Examples
+///
+/// ```
+/// let bytes = md2star_rs::markdown_to_pptx_bytes("# Title\n\n- one\n- two").unwrap();
+/// // A .pptx is a zip, so it starts with the local-file-header magic `PK`.
+/// assert_eq!(&bytes[..2], b"PK");
+/// ```
+pub fn markdown_to_pptx_bytes(markdown: &str) -> Result<Vec<u8>> {
+    pptx::build(&reader::parse(markdown))
+}
+
+/// Convert a Markdown string and write the resulting `.pptx` to `output`.
+///
+/// Parent directories are assumed to exist; only the file itself is created/truncated.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// md2star_rs::markdown_to_pptx_file("# Slide", Path::new("deck.pptx")).unwrap();
+/// ```
+pub fn markdown_to_pptx_file(markdown: &str, output: &Path) -> Result<()> {
+    let bytes = markdown_to_pptx_bytes(markdown)?;
+    fs::write(output, bytes)?;
+    Ok(())
+}
+
+/// Read a Markdown file and write the converted `.pptx` to `output`.
+///
+/// The `.pptx` counterpart of [`convert_path`]; the `md2pptx` binary is a thin shell over it.
+pub fn convert_path_to_pptx(input: &Path, output: &Path) -> Result<()> {
+    let markdown = fs::read_to_string(input)?;
+    markdown_to_pptx_file(&markdown, output)
 }

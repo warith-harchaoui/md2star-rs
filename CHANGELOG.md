@@ -4,6 +4,30 @@ All notable changes to `md2star-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — unreleased
+
+A second output backend: **Markdown → PPTX**, reusing the same AST.
+
+### Added
+- **`md2pptx` — Markdown → PowerPoint (.pptx).** A new binary plus library API
+  (`markdown_to_pptx_bytes` / `markdown_to_pptx_file` / `convert_path_to_pptx`). Each level-1
+  heading (`#`) starts a slide titled after it; the body until the next `#` flattens to bullet
+  points (ordered lists → numbered bullets, nested lists / deeper headings → sub-bullets, block
+  quotes and code blocks → bullet lines, tables → one bullet per row). Content before the first
+  `#` lands on an implicit first slide. Built on the `ppt-rs` crate (lean default feature set),
+  which supplies the slide-master/layout/theme scaffolding.
+- The backend reuses the existing reader/AST **unchanged** — the reader/writer seam paying off:
+  a whole new format with zero reader edits.
+- New `Error::Pptx` variant for presentation build/pack failures.
+
+### Fixed / determinism
+- **Byte-idempotent `.pptx` output.** `ppt-rs` stamps `SystemTime::now()` into
+  `docProps/core.xml`, so two conversions a second apart (or concurrent threads crossing a second
+  boundary) produced different bytes. The writer now re-packs the deck deterministically —
+  pinning that timestamp to a fixed sentinel and stamping a fixed entry mtime — so identical
+  Markdown yields identical bytes, even across threads. Guarded by
+  `pptx_conversion_is_idempotent{,_under_concurrency}` (`tests/pptx.rs`).
+
 ## [0.3.0] — unreleased
 
 Reference-doc styling — the last big gap versus the Pandoc-backed original.
