@@ -7,7 +7,7 @@
 # the scope/trade-offs versus the Pandoc-backed original.
 [package]
 name = "md2star-rs"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 rust-version = "1.74"
 license = "Apache-2.0"
@@ -43,7 +43,11 @@ docx-rs = "0.4"
 # uuid, xml-rs, zip) is the same league as docx-rs; the heavy `cli`/`mcp`/`web2ppt` features
 # stay off. It ships the slide-master/layout/theme scaffolding a deck needs, and its output is
 # byte-deterministic (fixed doc timestamp, stable ids) so md2pptx stays idempotent like md2docx.
-ppt-rs = { version = "0.2", default-features = false }
+# Pinned exactly: 0.2.23 through 0.2.25 don't compile with `default-features = false`
+# (`src/export/slide_render.rs` names `pdfrs` outside the feature gate that pulls it in).
+# Our Cargo.lock hid this locally — a fresh `cargo install md2star-rs` resolves the caret
+# range to the newest patch and fails. Revisit once upstream fixes the feature gate.
+ppt-rs = { version = "=0.2.22", default-features = false }
 # Typed error enums for the library surface — no stringly-typed errors leaking to callers.
 thiserror = "2"
 # Argument parsing for the `md2docx` binary (derive keeps the CLI declaration close to the

@@ -4,7 +4,17 @@ All notable changes to `md2star-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [0.4.0] — unreleased
+## [0.4.1] — 2026-09-05
+
+### Fixed
+- **`cargo install md2star-rs` failed on a clean machine.** The `ppt-rs` dependency was declared
+  as `"0.2"`, and every release from 0.2.23 on fails to compile with `default-features = false`
+  (`src/export/slide_render.rs` names `pdfrs` outside the feature gate that pulls it in). Our
+  committed `Cargo.lock` pinned the working 0.2.22, so local builds and CI stayed green while any
+  fresh consumer resolving the caret range got the newest patch and a build error. Pinned to
+  `=0.2.22` until upstream fixes the gate.
+
+## [0.4.0] — 2026-09-05
 
 A second output backend: **Markdown → PPTX**, reusing the same AST.
 
