@@ -2,8 +2,6 @@
 
 [🇫🇷 LISEZMOI](LISEZMOI.md) · [🇬🇧 README](README.md)
 
-[![crates.io](https://img.shields.io/crates/v/md2star-rs.svg)](https://crates.io/crates/md2star-rs)
-
 **A pure-Rust Markdown → DOCX & PPTX writer. No Pandoc, no subprocess, no runtime dependency —
 single static binaries that run on every OS and device.**
 
@@ -28,9 +26,7 @@ it needs none of the original's post-hoc `styles.xml` surgery (`postprocess.py`)
 ## Install
 
 ```bash
-# From crates.io (needs a Rust toolchain — https://rustup.rs)
-cargo install md2star-rs
-# or from a local clone
+# From source (needs a Rust toolchain — https://rustup.rs)
 cargo install --path .
 # or build a release binary
 cargo build --release   # → target/release/md2docx
