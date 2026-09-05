@@ -4,6 +4,14 @@ All notable changes to `md2star-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] — 2026-09-05
+
+### Changed
+- Repo hygiene only, no change to the library or the binaries. Added
+  `scripts/check-fresh-resolve.sh`, which builds the crate with no `Cargo.lock` — the way a
+  downstream consumer resolves it — and wired it into CI (Linux) and a versioned `.githooks`
+  pre-push gate. This is the check that would have caught the 0.4.0 breakage before publishing.
+
 ## [0.4.1] — 2026-09-05
 
 ### Fixed
