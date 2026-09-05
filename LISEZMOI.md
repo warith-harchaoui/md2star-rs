@@ -2,6 +2,8 @@
 
 [🇫🇷 LISEZMOI](LISEZMOI.md) · [🇬🇧 README](README.md)
 
+[![crates.io](https://img.shields.io/crates/v/md2star-rs.svg)](https://crates.io/crates/md2star-rs)
+
 **Un convertisseur Markdown → DOCX & PPTX 100 % Rust. Sans Pandoc, sans sous-processus, sans
 dépendance d'exécution — des binaires statiques qui tournent sur tous les OS et appareils.**
 
@@ -27,7 +29,9 @@ maîtrise totale de l'OOXML produit — d'où l'absence de la chirurgie `styles.
 ## Installation
 
 ```bash
-# Depuis les sources (nécessite Rust — https://rustup.rs)
+# Depuis crates.io (nécessite Rust — https://rustup.rs)
+cargo install md2star-rs
+# ou depuis un clone local
 cargo install --path .
 # ou un binaire release
 cargo build --release   # → target/release/md2docx
