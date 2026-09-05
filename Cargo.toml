@@ -46,7 +46,8 @@ docx-rs = "0.4"
 # Pinned exactly: 0.2.23 through 0.2.25 don't compile with `default-features = false`
 # (`src/export/slide_render.rs` names `pdfrs` outside the feature gate that pulls it in).
 # Our Cargo.lock hid this locally — a fresh `cargo install md2star-rs` resolves the caret
-# range to the newest patch and fails. Revisit once upstream fixes the feature gate.
+# range to the newest patch and fails. Filed upstream as
+# https://github.com/yingkitw/ppt-rs/issues/11 — unpin once that lands.
 ppt-rs = { version = "=0.2.22", default-features = false }
 # Typed error enums for the library surface — no stringly-typed errors leaking to callers.
 thiserror = "2"
