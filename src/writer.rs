@@ -27,7 +27,7 @@
 //! Remaining v0.1 limitations still open (tracked follow-ups): links/images render
 //! text/alt only; block quotes recurse without an indent/border; footnote references
 //! inside table cells fall back to a text marker (`docx-rs` only collects footnotes from
-//! top-level document paragraphs); custom ordered-list start numbers render from 1.
+//! top-level document paragraphs).
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,6 +43,16 @@ use crate::ast::{Block, Inline};
 const MONO_FONT: &str = "Consolas";
 /// Word supports nine list levels (0..=8); deeper nesting is clamped to the last.
 const MAX_LEVEL: usize = 8;
+
+/// The numbering id `docx-rs` keeps for itself, in both id namespaces.
+///
+/// `Numberings::build_to` unconditionally writes its own `<w:abstractNum w:abstractNumId="1">`
+/// and `<w:num w:numId="1">` into `numbering.xml` *before* whatever we added, whether or not
+/// anything uses them. Our own ids therefore have to start above 1 in both namespaces: until
+/// 0.4.3 the bullet instance was `numId="1"` and the file carried two `<w:num w:numId="1">`
+/// entries, of which Word reads the first — so every bullet list rendered as `docx-rs`'s
+/// default decimal numbering, `1. 2. 3.` where dots were asked for.
+const DOCX_RS_RESERVED_ID: usize = 1;
 /// The deepest heading level Word ships a built-in `HeadingN` style for; `#######`+ clamps here.
 const MAX_HEADING_STYLE: u8 = 6;
 
@@ -98,6 +108,12 @@ struct Writer {
     /// reference template may already use low ids, so [`Writer::with_reference`] offsets ours
     /// upward; each ordered list mints an instance pointing back at this abstract id.
     decimal_abstract_id: usize,
+    /// Next abstract-numbering id to hand out, for the one case that cannot share
+    /// [`Writer::decimal_abstract_id`]: a list whose first number is not 1. OOXML puts the
+    /// start number on the abstract definition's level, not on the instance, so such a list
+    /// needs a definition of its own. Separate counter from [`Writer::next_num_id`] because
+    /// `abstractNumId` and `numId` are separate OOXML namespaces.
+    next_abstract_id: usize,
     /// The single numbering *instance* shared by every bullet list (bullets don't count, so
     /// sharing one instance is harmless and keeps the numbering part small).
     bullet_num_id: usize,
@@ -114,8 +130,9 @@ struct Writer {
 impl Writer {
     /// A writer with our own default styling (no reference template).
     fn new() -> Self {
-        // No template: numbering ids start at 0, headings/quotes use inline formatting.
-        Self::assemble(Docx::new(), 0, false, HashSet::new())
+        // No template: ids start just above the one `docx-rs` reserves (see
+        // `DOCX_RS_RESERVED_ID`), headings/quotes use inline formatting.
+        Self::assemble(Docx::new(), DOCX_RS_RESERVED_ID + 1, false, HashSet::new())
     }
 
     /// A writer that inherits styling from a reference `template` (the `--reference-doc` path).
@@ -155,7 +172,7 @@ impl Writer {
         let bullet_num_id = num_base + 1;
         let docx = docx
             .add_abstract_numbering(bullet_abstract(bullet_abstract_id))
-            .add_abstract_numbering(decimal_abstract(decimal_abstract_id))
+            .add_abstract_numbering(decimal_abstract(decimal_abstract_id, 1))
             .add_numbering(Numbering::new(bullet_num_id, bullet_abstract_id));
         Writer {
             docx: Some(docx),
@@ -164,6 +181,7 @@ impl Writer {
             next_footnote_id: 1,
             next_para_id: 1,
             decimal_abstract_id,
+            next_abstract_id: decimal_abstract_id + 1,
             bullet_num_id,
             use_named_styles,
             styles,
@@ -197,10 +215,23 @@ impl Writer {
         self.docx = Some(docx.add_table(table));
     }
 
-    /// Register a numbering instance (used per ordered list so each restarts at 1).
+    /// Register a numbering instance (used per ordered list so each restarts on its own).
     fn register_numbering(&mut self, numbering: Numbering) {
         let docx = self.docx.take().expect("docx present");
         self.docx = Some(docx.add_numbering(numbering));
+    }
+
+    /// Register an abstract numbering definition and return its id.
+    fn register_abstract_numbering(&mut self, abstract_numbering: AbstractNumbering) {
+        let docx = self.docx.take().expect("docx present");
+        self.docx = Some(docx.add_abstract_numbering(abstract_numbering));
+    }
+
+    /// Allocate the next abstract-numbering id.
+    fn alloc_abstract_id(&mut self) -> usize {
+        let id = self.next_abstract_id;
+        self.next_abstract_id += 1;
+        id
     }
 
     /// Allocate the next ordered-list numbering instance id.
@@ -314,15 +345,26 @@ impl Writer {
 
     /// Emit a list with **native Word numbering**.
     ///
-    /// Ordered lists each get a fresh numbering instance (so they restart at 1); bullet
-    /// lists share one. Nesting maps to the paragraph's indent level. Each item's first
-    /// paragraph carries the number/bullet; a nested list inside an item recurses one level
-    /// deeper.
-    fn write_list(&mut self, ordered: bool, _start: u64, items: &[Vec<Block>], depth: usize) {
+    /// Ordered lists each get a fresh numbering instance (so they restart on their own
+    /// first number rather than continuing the previous list); bullet lists share one.
+    /// Nesting maps to the paragraph's indent level. Each item's first paragraph carries the
+    /// number/bullet; a nested list inside an item recurses one level deeper.
+    fn write_list(&mut self, ordered: bool, start: u64, items: &[Vec<Block>], depth: usize) {
         // Pick (or mint) the numbering instance for this list.
         let num_id = if ordered {
             let id = self.alloc_num_id();
-            self.register_numbering(Numbering::new(id, self.decimal_abstract_id));
+            // A list starting at 1 shares the one decimal definition. One starting anywhere
+            // else gets its own, because OOXML carries the first number on the abstract
+            // definition's level — `5. first` rendered as `1.` until 0.4.3 for want of this.
+            let start = usize::try_from(start).unwrap_or(1).max(1);
+            let abstract_id = if start == 1 {
+                self.decimal_abstract_id
+            } else {
+                let abstract_id = self.alloc_abstract_id();
+                self.register_abstract_numbering(decimal_abstract(abstract_id, start));
+                abstract_id
+            };
+            self.register_numbering(Numbering::new(id, abstract_id));
             id
         } else {
             self.bullet_num_id
@@ -511,12 +553,14 @@ impl Writer {
 fn numbering_base(template: &Docx) -> usize {
     let abstract_max = template.numberings.abstract_nums.iter().map(|n| n.id).max();
     let num_max = template.numberings.numberings.iter().map(|n| n.id).max();
-    // `chain` folds both maxima together; `+ 1` lands on the first free id above all of them.
+    // `chain` folds both maxima together; `+ 1` lands on the first free id above all of them —
+    // but never below `DOCX_RS_RESERVED_ID + 1`, see that constant.
     abstract_max
         .into_iter()
         .chain(num_max)
         .max()
         .map_or(0, |m| m + 1)
+        .max(DOCX_RS_RESERVED_ID + 1)
 }
 
 /// Build the abstract numbering for bullet lists: nine levels of alternating glyphs.
@@ -531,6 +575,7 @@ fn bullet_abstract(id: usize) -> AbstractNumbering {
         };
         abstract_num = abstract_num.add_level(indented_level(
             level,
+            1,
             NumberFormat::new("bullet"),
             LevelText::new(glyph),
         ));
@@ -539,13 +584,14 @@ fn bullet_abstract(id: usize) -> AbstractNumbering {
 }
 
 /// Build the abstract numbering for ordered lists: nine decimal levels (`%1.`, `%2.`, …).
-fn decimal_abstract(id: usize) -> AbstractNumbering {
+fn decimal_abstract(id: usize, start: usize) -> AbstractNumbering {
     let mut abstract_num = AbstractNumbering::new(id);
     for level in 0..=MAX_LEVEL {
         // `%N` references the counter of the Nth level, so each depth prints its own number.
         let text = format!("%{}.", level + 1);
         abstract_num = abstract_num.add_level(indented_level(
             level,
+            start,
             NumberFormat::new("decimal"),
             LevelText::new(text),
         ));
@@ -554,10 +600,10 @@ fn decimal_abstract(id: usize) -> AbstractNumbering {
 }
 
 /// A single numbering level with a hanging indent that grows with depth.
-fn indented_level(level: usize, format: NumberFormat, text: LevelText) -> Level {
+fn indented_level(level: usize, start: usize, format: NumberFormat, text: LevelText) -> Level {
     // 720 twips (~0.5in) of indent per level, with a 360-twip hanging indent for the marker.
     let left = 720 * (level as i32 + 1);
-    Level::new(level, Start::new(1), format, text, LevelJc::new("left")).indent(
+    Level::new(level, Start::new(start), format, text, LevelJc::new("left")).indent(
         Some(left),
         Some(SpecialIndentType::Hanging(360)),
         None,

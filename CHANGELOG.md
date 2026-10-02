@@ -4,6 +4,36 @@ All notable changes to `md2star-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] — 2026-10-02
+
+### Fixed
+- **Bullet lists rendered as `1. 2. 3.` in Word.** `docx-rs` unconditionally writes its own
+  `<w:abstractNum w:abstractNumId="1">` and `<w:num w:numId="1">` into `numbering.xml` ahead of
+  anything we add, and our bullet instance was also `numId="1"`. The file therefore carried two
+  instances with the same id, Word reads the first, and every bullet list picked up `docx-rs`'s
+  default decimal numbering instead of our bullet glyphs. Our ids now start above the one
+  `docx-rs` reserves, in both id namespaces. Two tests cover it: one asserts no id is declared
+  twice, the other follows the paragraph → instance → definition chain Word follows and checks
+  a bullet list lands on a `bullet` format.
+- **An ordered list that does not start at 1 now renders from its own first number.**
+  `5. five` opened at `1.` in the produced `.docx`. OOXML carries the first number on the
+  abstract numbering definition's level, not on the per-list instance, so every list pointed at
+  the one shared decimal definition and inherited its `<w:start w:val="1"/>`. A list starting
+  anywhere other than 1 now gets a definition of its own; lists starting at 1 still share one,
+  so `numbering.xml` does not grow on a document full of ordinary lists. Covered by three tests
+  in `tests/convert.rs` that read `word/numbering.xml` directly.
+
+### Changed
+- **CI is one Linux job instead of a three-OS matrix.** The heavy, cross-platform testing is
+  the local pre-push gate's job; CI confirms, it does not discover.
+- **`rust-version` corrected from 1.74 to 1.88.** The declared floor had quietly stopped being
+  true: `image`, `time` and `zip` in the dependency tree all require 1.88, so the crate fails
+  to even resolve on anything older. Verified against a real 1.88.0 toolchain, and against
+  1.85.0 to confirm the floor is where it says it is.
+- The `ppt-rs = "=0.2.22"` pin stays, re-checked on 2026-10-02: upstream issue #11 is still
+  open and 0.2.27 still fails to compile with `default-features = false`, verified against a
+  scratch crate rather than assumed.
+
 ## [0.4.2] — 2026-09-05
 
 ### Changed

@@ -168,3 +168,122 @@ fn reader_nests_emphasis_inside_strong() {
     let blocks = reader::parse("**a _b_**");
     assert_eq!(blocks.len(), 1, "expected a single paragraph");
 }
+
+/// Pull `word/numbering.xml` out of a packed `.docx` byte buffer.
+fn numbering_xml(docx_bytes: &[u8]) -> String {
+    entry(docx_bytes, "word/numbering.xml").expect("docx contains word/numbering.xml")
+}
+
+#[test]
+fn an_ordered_list_starts_at_the_number_the_markdown_asks_for() {
+    let bytes = markdown_to_docx_bytes("5. five\n6. six\n").expect("conversion succeeds");
+    let xml = numbering_xml(&bytes);
+    // The first number lives on the abstract definition's level, not on the paragraph,
+    // so this is where a list that opens at 5 has to show up.
+    assert!(
+        xml.contains(r#"<w:start w:val="5""#),
+        "no level starting at 5 in numbering.xml: {xml}"
+    );
+}
+
+#[test]
+fn a_list_starting_at_one_still_shares_the_default_numbering_definition() {
+    // The common case must not mint a definition per list — that would bloat
+    // numbering.xml on any document with many lists.
+    let one = markdown_to_docx_bytes("1. a\n2. b\n").expect("conversion succeeds");
+    let many = markdown_to_docx_bytes("1. a\n\ntext\n\n1. b\n\ntext\n\n1. c\n")
+        .expect("conversion succeeds");
+    // The trailing space matters: `<w:abstractNum ` is the definition element,
+    // while `<w:abstractNumId` is the per-instance back-reference and grows with
+    // the number of lists no matter which definition they share.
+    let count = |xml: &str| xml.matches("<w:abstractNum ").count();
+    assert_eq!(
+        count(&numbering_xml(&one)),
+        count(&numbering_xml(&many)),
+        "lists starting at 1 should reuse one abstract numbering definition"
+    );
+}
+
+#[test]
+fn two_ordered_lists_with_different_starts_do_not_share_a_definition() {
+    let bytes =
+        markdown_to_docx_bytes("3. three\n\ntext\n\n7. seven\n").expect("conversion succeeds");
+    let xml = numbering_xml(&bytes);
+    assert!(
+        xml.contains(r#"w:val="3""#),
+        "the 3-start is missing: {xml}"
+    );
+    assert!(
+        xml.contains(r#"w:val="7""#),
+        "the 7-start is missing: {xml}"
+    );
+}
+
+#[test]
+fn no_numbering_id_is_declared_twice() {
+    // `docx-rs` always writes its own `<w:abstractNum w:abstractNumId="1">` and
+    // `<w:num w:numId="1">` ahead of ours. Colliding with either produces a
+    // `numbering.xml` with duplicate ids, and Word reads the *first* — which is
+    // how every bullet list came out as `1. 2. 3.` before 0.4.3.
+    let bytes = markdown_to_docx_bytes("- a\n- b\n\ntext\n\n1. one\n\ntext\n\n4. four\n")
+        .expect("conversion succeeds");
+    let xml = numbering_xml(&bytes);
+
+    let ids = |tag: &str| -> Vec<String> {
+        xml.match_indices(tag)
+            .map(|(i, _)| {
+                let rest = &xml[i + tag.len()..];
+                rest[..rest.find('"').unwrap()].to_string()
+            })
+            .collect()
+    };
+    for (what, tag) in [
+        ("abstractNum", r#"<w:abstractNum w:abstractNumId=""#),
+        ("num", r#"<w:num w:numId=""#),
+    ] {
+        let mut seen = ids(tag);
+        let total = seen.len();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(
+            total,
+            seen.len(),
+            "duplicate {what} id in numbering.xml: {xml}"
+        );
+    }
+}
+
+#[test]
+fn a_bullet_list_points_at_a_bullet_definition_not_a_decimal_one() {
+    let bytes = markdown_to_docx_bytes("- a\n- b\n").expect("conversion succeeds");
+    let numbering = numbering_xml(&bytes);
+    let document = document_xml(&bytes);
+
+    // Follow the same chain Word follows: the paragraph names an instance, the
+    // instance names a definition, the definition says what the marker looks like.
+    let num_id = attr_after(&document, r#"<w:numId w:val=""#).expect("list items carry a numId");
+    let abstract_id = attr_after(
+        &numbering,
+        &format!(r#"<w:num w:numId="{num_id}"><w:abstractNumId w:val=""#),
+    )
+    .unwrap_or_else(|| panic!("no instance {num_id} in numbering.xml: {numbering}"));
+    let definition = numbering
+        .find(&format!(
+            r#"<w:abstractNum w:abstractNumId="{abstract_id}">"#
+        ))
+        .unwrap_or_else(|| panic!("no definition {abstract_id} in numbering.xml: {numbering}"));
+    let format = attr_after(&numbering[definition..], r#"<w:numFmt w:val=""#)
+        .expect("a definition declares a numFmt");
+
+    assert_eq!(
+        format, "bullet",
+        "a bullet list resolved to a {format} definition (numId {num_id} -> abstractNum {abstract_id})"
+    );
+}
+
+/// The value of the attribute `prefix` opens, i.e. everything up to the closing
+/// quote. `None` when the prefix does not occur at all.
+fn attr_after(xml: &str, prefix: &str) -> Option<String> {
+    let rest = &xml[xml.find(prefix)? + prefix.len()..];
+    Some(rest[..rest.find('"')?].to_string())
+}

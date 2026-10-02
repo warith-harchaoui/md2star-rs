@@ -79,7 +79,7 @@ to bullets (ordered → numbered, nested → sub-bullets, quotes/code/tables →
 | Headings `#`–`######` | Bold, level-scaled paragraphs — or the template's `Heading1`…`Heading6` styles under `--reference-doc` |
 | Reference template | **`--reference-doc template.docx`** — inherit styles/theme/fonts/page-setup; headings & quotes via named styles |
 | Paragraphs, `**bold**`, `_italic_`, `` `code` `` | Runs with matching formatting |
-| Bullet & ordered lists | **Native Word numbering** (`numbering.xml` + `numPr`); ordered lists restart at 1; nesting → indent levels |
+| Bullet & ordered lists | **Native Word numbering** (`numbering.xml` + `numPr`); bullets really are bullets and each ordered list restarts at its own first number (`5.` opens at 5); nesting → indent levels |
 | GFM pipe tables | Real Word tables (`<w:tbl>`) |
 | Fenced code blocks | Monospace, line-preserving |
 | Block quotes | Rendered inline (recursively) |
@@ -114,7 +114,9 @@ cargo fmt --check                            # formatting gate
 cargo clippy --all-targets -- -D warnings    # lint gate (warnings are errors)
 ```
 
-CI runs all three on Linux, macOS, and Windows.
+CI runs all three on Linux — one job, deliberately. The heavy, cross-platform testing is the
+local pre-push gate's job (`scripts/install-hooks.sh`); CI confirms what already passed, it
+does not discover.
 
 ## Checks before pushing
 
