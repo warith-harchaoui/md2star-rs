@@ -18,9 +18,9 @@ the OOXML. Nothing is shelled out to.
 
 | Intent | CLI | Library |
 |--------|-----|---------|
-| Markdown → Word | `md2docx` | `convert_path`, `markdown_to_docx_file`, `markdown_to_docx_bytes` |
-| Markdown → Word, styled after a template | `md2docx --reference-doc` | `convert_path_with_reference`, `markdown_to_docx_bytes_with_reference` |
-| Markdown → PowerPoint | `md2pptx` | `convert_path_to_pptx`, `markdown_to_pptx_file`, `markdown_to_pptx_bytes` |
+| Markdown → Word | `md2star-rs docx` (or `md2docx`) | `convert_path`, `markdown_to_docx_file`, `markdown_to_docx_bytes` |
+| Markdown → Word, styled after a template | `md2star-rs docx --reference-doc` | `convert_path_with_reference`, `markdown_to_docx_bytes_with_reference` |
+| Markdown → PowerPoint | `md2star-rs pptx` (or `md2pptx`) | `convert_path_to_pptx`, `markdown_to_pptx_file`, `markdown_to_pptx_bytes` |
 
 The `_bytes` variants never touch the filesystem, which is what makes this
 crate usable from a server or a WASM shell.
@@ -37,7 +37,7 @@ crate usable from a server or a WASM shell.
   "convert Markdown in a container without 400 MB of dependencies",
   "docx generation from Rust", "in-memory docx bytes".
 - **The crate itself**: `cargo add md2star-rs`, `cargo install md2star-rs`,
-  `md2star_rs`.
+  `md2star_rs`, `md2star-rs docx`, `md2star-rs pptx`.
 
 ## What a deck looks like
 
@@ -64,15 +64,21 @@ bugs to report here:
 - **PDF output**, the GUI, the HTTP API, the MCP tool set, and reading a
   finished document *back* into Markdown.
 
-## A name collision worth knowing about
+## Three binaries: which one to reach for
 
-`cargo install md2star-rs` installs binaries called `md2docx` and `md2pptx` —
-**the same names the Python `md2star` installs**. If both are on one machine,
-`PATH` order silently decides which one runs, and nothing tells you which it
-was. The sibling Rust crates in this suite avoid this by naming their binary
-after the crate; these two predate that convention and renaming them would
-break existing installs. Check with `which md2docx` when the output surprises
-you.
+`cargo install md2star-rs` installs **`md2star-rs`**, `md2docx` and `md2pptx`.
+
+`md2docx` and `md2pptx` carry **the same names the Python `md2star` installs**.
+With both on one machine, `PATH` order silently decides which runs and nothing
+tells you which it was. They are kept because removing or renaming them would
+break every existing install.
+
+`md2star-rs docx` and `md2star-rs pptx` cannot collide with anything, and they
+delegate to the same library calls, so the output is byte-for-byte identical.
+**Use them in scripts, Dockerfiles and CI** — anywhere being certain which
+implementation ran matters more than typing less. Keep `md2docx` for
+interactive use if you prefer it, and run `which md2docx` when output
+surprises you.
 
 ## When NOT to use md2star-rs (SKIP)
 

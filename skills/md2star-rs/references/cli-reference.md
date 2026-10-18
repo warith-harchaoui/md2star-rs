@@ -1,22 +1,26 @@
-# CLI reference — `md2docx` and `md2pptx`
+# CLI reference — `md2star-rs`, `md2docx`, `md2pptx`
 
-Both installed by `cargo install md2star-rs`.
+`cargo install md2star-rs` installs three binaries.
 
-## Read this first: the names collide
+## Which one to use
 
-These two binaries have **the same names the Python `md2star` installs**. With
-both on one machine, `PATH` order decides which runs and nothing tells you
-which it was. When the output looks wrong, run `which md2docx` before
-debugging anything else.
+**`md2star-rs`** is named after the crate and therefore cannot collide with
+anything. Use it whenever you write a command someone else will run: a script,
+a Dockerfile, a CI job, a README.
 
-The sibling Rust crates in this suite name their binary after the crate
-(`audio-helper-rs`, `youtube-helper-rs`, …) precisely to avoid this. These two
-predate that convention, and renaming them now would break existing installs.
+**`md2docx` and `md2pptx`** carry the same names the Python `md2star` installs.
+With both on one machine, `PATH` order decides which runs and nothing tells you
+which it was. They are kept because removing or renaming them would break every
+existing install — not because they are the better choice.
 
-## `md2docx`
+All three delegate to the same library calls. The output is byte-for-byte
+identical; only the certainty differs.
+
+## `md2star-rs docx` — and the `md2docx` binary
 
 ```
-md2docx <INPUT.md> [-o|--output OUT.docx] [--reference-doc TEMPLATE.docx]
+md2star-rs docx <INPUT.md> [-o|--output OUT.docx] [--reference-doc TEMPLATE.docx]
+md2docx         <INPUT.md> [-o|--output OUT.docx] [--reference-doc TEMPLATE.docx]
 ```
 
 - `--output` defaults to the input path with its extension swapped for
@@ -26,10 +30,11 @@ md2docx <INPUT.md> [-o|--output OUT.docx] [--reference-doc TEMPLATE.docx]
   named styles. This is Pandoc's flag of the same name, and it is how a house
   template gets applied without hand-editing anything afterwards.
 
-## `md2pptx`
+## `md2star-rs pptx` — and the `md2pptx` binary
 
 ```
-md2pptx <INPUT.md> [-o|--output OUT.pptx]
+md2star-rs pptx <INPUT.md> [-o|--output OUT.pptx]
+md2pptx         <INPUT.md> [-o|--output OUT.pptx]
 ```
 
 Each `#` heading starts a slide; the body flattens to bullets. Ordered lists
@@ -39,8 +44,9 @@ tables become bullet lines. Inline formatting is flattened. There is no
 
 ## Output contract
 
-- Success: the written path on **stdout**, exit `0`.
-- Failure: the error on **stderr**, non-zero exit.
+- Success: `wrote <path>` on **stdout**, exit `0`.
+- Failure: the error on **stderr**, prefixed with the binary's own name,
+  non-zero exit.
 
 ## What will not work, by design
 

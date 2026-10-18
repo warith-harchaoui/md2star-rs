@@ -125,14 +125,26 @@ spelled out, because that is the one choice here that fails quietly: citations,
 math, embedded images and PDF are absent by design, and a document missing them
 looks finished.
 
-## Two binaries, two names already taken
+## Three binaries: which one to reach for
 
-`cargo install md2star-rs` installs `md2docx` and `md2pptx` — **the same names
-the Python `md2star` installs**. With both on one machine, `PATH` order decides
-which runs and nothing says which it was. Run `which md2docx` when the output
-surprises you. The sibling Rust crates in this suite name their binary after
-the crate for exactly this reason; these two predate that convention, and
-renaming them would break existing installs.
+`cargo install md2star-rs` installs **`md2star-rs`**, `md2docx` and `md2pptx`.
+
+`md2docx` and `md2pptx` carry **the same names the Python `md2star` installs**,
+so with both on one machine `PATH` order decides which runs and nothing says
+which it was. They are kept because renaming them would break every existing
+install.
+
+```bash
+md2star-rs docx report.md -o report.docx
+md2star-rs pptx talk.md   -o talk.pptx
+```
+
+`md2star-rs docx` and `md2star-rs pptx` cannot collide with anything, and they
+delegate to the same library calls — the output is byte-for-byte identical.
+Use them in scripts, Dockerfiles and CI, anywhere being certain which
+implementation ran matters more than typing less. Keep `md2docx` for
+interactive use if you prefer it, and run `which md2docx` when output
+surprises you.
 
 ## Development
 

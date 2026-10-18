@@ -10,9 +10,12 @@ installable agent skill. This crate carries three.
 variants never touch the filesystem, which is what lets a server or a WASM
 shell use the crate without a scratch directory.
 
-**Two CLIs** — `md2docx` and `md2pptx`. Unusually for this suite, both predate
-the "name the binary after the crate" convention and therefore collide with the
-Python twin's console scripts; `cli-reference.md` says what to do about it.
+**Three CLIs** — `md2star-rs`, plus `md2docx` and `md2pptx`. The last two
+predate this suite's "name the binary after the crate" convention and therefore
+collide with the Python twin's console scripts. Rather than rename them and
+break existing installs, `md2star-rs` was added beside them: it cannot collide,
+it delegates to the same library calls, and its output is byte-for-byte
+identical. `cli-reference.md` says which to reach for when.
 
 **Agent skill** — this directory.
 

@@ -97,15 +97,26 @@ Python est énoncé, parce que c'est le seul choix ici qui échoue en silence :
 citations, math, images embarquées et PDF sont absents par décision de
 périmètre, or un document auquel ils manquent a l'air terminé.
 
-## Deux binaires, deux noms déjà pris
+## Trois binaires : lequel choisir
 
-`cargo install md2star-rs` installe `md2docx` et `md2pptx` — **les noms mêmes
-qu'installe le `md2star` Python**. Avec les deux sur une machine, c'est l'ordre
-du `PATH` qui tranche, sans que rien ne dise lequel a tourné. Lancer
-`which md2docx` quand la sortie surprend. Les crates Rust sœurs de cette suite
-nomment leur binaire d'après la crate pour cette raison précise ; ces deux-là
-sont antérieurs à cette convention et les renommer casserait les installations
-existantes.
+`cargo install md2star-rs` installe **`md2star-rs`**, `md2docx` et `md2pptx`.
+
+`md2docx` et `md2pptx` portent **les noms mêmes qu'installe le `md2star`
+Python** : avec les deux sur une machine, c'est l'ordre du `PATH` qui tranche,
+sans que rien ne dise lequel a tourné. Ils sont conservés parce que les
+renommer casserait toutes les installations existantes.
+
+```bash
+md2star-rs docx rapport.md -o rapport.docx
+md2star-rs pptx expose.md  -o expose.pptx
+```
+
+`md2star-rs docx` et `md2star-rs pptx` ne peuvent entrer en collision avec
+rien. Ils délèguent aux mêmes appels de bibliothèque : la sortie est
+identique octet pour octet. À utiliser dans les scripts, les Dockerfile et la
+CI, partout où savoir avec certitude quelle implémentation a tourné compte plus
+que la brièveté. Garder `md2docx` pour l'usage interactif si vous préférez ;
+lancer `which md2docx` quand la sortie surprend.
 
 ## Vérifications avant de pousser
 

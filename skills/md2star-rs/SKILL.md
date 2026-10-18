@@ -1,7 +1,7 @@
 ---
 name: md2star-rs
 description: >-
-  Markdown to DOCX and PPTX in pure Rust, with no Pandoc, no LaTeX and nothing shelled out: one CommonMark plus GFM reader, two OOXML writers. Convert a file or a string, get a file or bytes in memory, and style the Word output after an existing docx template whose styles, theme, fonts and page setup are inherited (a reference doc). Each heading becomes a slide in the deck backend. Use when the user says "convert this markdown to Word", "markdown to docx", "make a deck from this markdown", "markdown to PowerPoint", "use our corporate template", "a single binary with no Pandoc install", or names cargo add md2star-rs, md2docx or md2pptx. Do NOT use when citations, math, embedded images, PDF output or reading a document back into Markdown are needed -- the Python twin md2star is the max-fidelity path for all of those. Do NOT use to author the Markdown itself, or for HTML output.
+  Markdown to DOCX and PPTX in pure Rust, with no Pandoc, no LaTeX and nothing shelled out: one CommonMark plus GFM reader, two OOXML writers. Convert a file or a string, get a file or bytes in memory, and style the Word output after an existing docx template whose styles, theme, fonts and page setup are inherited (a reference doc). Each heading becomes a slide in the deck backend. Use when the user says "convert this markdown to Word", "markdown to docx", "make a deck from this markdown", "markdown to PowerPoint", "use our corporate template", "a single binary with no Pandoc install", or names cargo add md2star-rs, md2star-rs docx, md2docx or md2pptx. Do NOT use when citations, math, embedded images, PDF output or reading a document back into Markdown are needed -- the Python twin md2star is the max-fidelity path for all of those. Do NOT use to author the Markdown itself, or for HTML output.
 license: BSD-3-Clause
 metadata:
   author: Warith Harchaoui
@@ -21,9 +21,9 @@ exists: the Pandoc path is a 400 MB install before the first conversion.
 
 | Intent | CLI | Library |
 |--------|-----|---------|
-| Markdown to Word | `md2docx in.md -o out.docx` | `convert_path`, `markdown_to_docx_file`, `markdown_to_docx_bytes` |
-| ... styled after a template | `md2docx in.md --reference-doc house.docx` | `convert_path_with_reference`, `markdown_to_docx_bytes_with_reference` |
-| Markdown to PowerPoint | `md2pptx in.md -o out.pptx` | `convert_path_to_pptx`, `markdown_to_pptx_file`, `markdown_to_pptx_bytes` |
+| Markdown to Word | `md2star-rs docx in.md -o out.docx` | `convert_path`, `markdown_to_docx_file`, `markdown_to_docx_bytes` |
+| ... styled after a template | `md2star-rs docx in.md --reference-doc house.docx` | `convert_path_with_reference`, `markdown_to_docx_bytes_with_reference` |
+| Markdown to PowerPoint | `md2star-rs pptx in.md -o out.pptx` | `convert_path_to_pptx`, `markdown_to_pptx_file`, `markdown_to_pptx_bytes` |
 
 The `_bytes` variants never touch the filesystem, which is what makes this
 usable from a server or a WASM shell.
@@ -44,15 +44,20 @@ let styled = md2star_rs::markdown_to_docx_bytes_with_reference("# Title", &templ
 let deck = md2star_rs::markdown_to_pptx_bytes("# Slide 1\n\n- point\n- point")?;
 ```
 
-## Check this before debugging a surprising result
+## Prefer the unambiguous binary
 
-`cargo install md2star-rs` installs binaries named `md2docx` and `md2pptx` —
-**the same names the Python `md2star` installs**. With both on one machine,
-`PATH` order decides which runs, and nothing says which it was. When output
-looks unlike what this crate should produce, run `which md2docx` first. The
-sibling Rust crates here name their binary after the crate precisely to avoid
-this; these two predate that convention, and renaming them would break
-existing installs.
+`cargo install md2star-rs` installs three binaries: `md2star-rs`, `md2docx`
+and `md2pptx`.
+
+The last two carry **the same names the Python `md2star` installs**, so with
+both on one machine `PATH` order decides which runs and nothing says which it
+was. They are kept because renaming them would break existing installs.
+
+**Reach for `md2star-rs docx` and `md2star-rs pptx` instead** whenever you
+write a command for someone else to run — a script, a Dockerfile, a CI job, an
+instruction in a README. They cannot collide, and they delegate to the same
+library calls, so the output is byte-for-byte identical. If a user reports
+output that does not look like this crate's, have them run `which md2docx`.
 
 ## What the deck backend does
 

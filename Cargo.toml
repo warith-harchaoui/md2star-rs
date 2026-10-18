@@ -30,6 +30,13 @@ name = "md2star_rs"
 path = "src/lib.rs"
 
 [[bin]]
+# Named after the crate, and therefore unable to collide with anything the
+# Python `md2star` installs. `md2docx` and `md2pptx` below keep working
+# unchanged — this adds a certain option rather than removing a familiar one.
+name = "md2star-rs"
+path = "src/bin/md2star-rs.rs"
+
+[[bin]]
 name = "md2docx"
 path = "src/main.rs"
 
