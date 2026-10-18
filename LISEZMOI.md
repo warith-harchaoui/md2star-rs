@@ -77,6 +77,36 @@ math → OMML, hyperliens, images intégrées. Le backend PPTX est volontairemen
 d'abord » : il aplatit le formatage inline et n'intègre pas encore d'images. Pour tout cela,
 gardez [`md2star`](https://github.com/warith-harchaoui/md2star) comme voie « fidélité maximale ».
 
+## Skill d'agent
+
+`skills/md2star-rs/` empaquette cette crate en **Claude Skill** et en **skill
+OpenCode**, pour qu'un agent la découvre et convertisse des documents pour le
+compte de l'utilisateur. L'installation pour les deux hôtes est dans
+[`skills/README.md`](skills/README.md).
+
+Son catalogue de déclencheurs est imposé, pas décoratif :
+[`TRIGGERS.md`](TRIGGERS.md) est le catalogue destiné aux humains,
+`references/triggers.md` en est le miroir destiné à l'agent, et
+`tests/skill.rs` fait échouer `cargo test` — donc le hook de pré-push — si les
+deux divergent, si la `description` du skill dépasse le plafond publié de 1024
+caractères, si son `name` cesse de correspondre à son dossier ou s'il pointe
+vers une référence qui n'existe plus.
+
+Le catalogue est aussi l'endroit où l'écart de fidélité avec le `md2star`
+Python est énoncé, parce que c'est le seul choix ici qui échoue en silence :
+citations, math, images embarquées et PDF sont absents par décision de
+périmètre, or un document auquel ils manquent a l'air terminé.
+
+## Deux binaires, deux noms déjà pris
+
+`cargo install md2star-rs` installe `md2docx` et `md2pptx` — **les noms mêmes
+qu'installe le `md2star` Python**. Avec les deux sur une machine, c'est l'ordre
+du `PATH` qui tranche, sans que rien ne dise lequel a tourné. Lancer
+`which md2docx` quand la sortie surprend. Les crates Rust sœurs de cette suite
+nomment leur binaire d'après la crate pour cette raison précise ; ces deux-là
+sont antérieurs à cette convention et les renommer casserait les installations
+existantes.
+
 ## Vérifications avant de pousser
 
 ```bash

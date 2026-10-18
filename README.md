@@ -106,6 +106,34 @@ a clean follow-up, none a redesign:
 If you need those, use [`md2star`](https://github.com/warith-harchaoui/md2star). If you need
 a zero-install single binary for straightforward Markdown → Word or PowerPoint, use this.
 
+## Agent skill
+
+`skills/md2star-rs/` packages this crate as a **Claude Skill** and an
+**OpenCode skill**, so an agent can discover it and convert documents on the
+user's behalf. Installation for both hosts is in
+[`skills/README.md`](skills/README.md).
+
+Its trigger catalogue is enforced, not decorative: [`TRIGGERS.md`](TRIGGERS.md)
+is the user-facing catalogue, `references/triggers.md` is its agent-facing
+mirror, and `tests/skill.rs` fails `cargo test` — and therefore the pre-push
+hook — if the two drift apart, if the skill's `description` exceeds the
+published 1024-character cap, if its `name` stops matching its folder or if it
+points at a reference that no longer exists.
+
+The catalogue is also where the fidelity gap against the Python `md2star` is
+spelled out, because that is the one choice here that fails quietly: citations,
+math, embedded images and PDF are absent by design, and a document missing them
+looks finished.
+
+## Two binaries, two names already taken
+
+`cargo install md2star-rs` installs `md2docx` and `md2pptx` — **the same names
+the Python `md2star` installs**. With both on one machine, `PATH` order decides
+which runs and nothing says which it was. Run `which md2docx` when the output
+surprises you. The sibling Rust crates in this suite name their binary after
+the crate for exactly this reason; these two predate that convention, and
+renaming them would break existing installs.
+
 ## Development
 
 ```bash
