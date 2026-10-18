@@ -35,14 +35,23 @@ path = "src/lib.rs"
 # unchanged — this adds a certain option rather than removing a familiar one.
 name = "md2star-rs"
 path = "src/bin/md2star-rs.rs"
+required-features = ["cli"]
 
 [[bin]]
 name = "md2docx"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [[bin]]
 name = "md2pptx"
 path = "src/bin/md2pptx.rs"
+required-features = ["cli"]
+
+[features]
+# On by default so `cargo install md2star-rs` still yields the three binaries.
+# Library consumers turn it off with `default-features = false`.
+default = ["cli"]
+cli = ["dep:clap"]
 
 [dependencies]
 # CommonMark + GFM reader. We drive it in *event* mode and fold the flat event stream into
@@ -66,9 +75,11 @@ docx-rs = "0.4"
 ppt-rs = { version = "=0.2.22", default-features = false }
 # Typed error enums for the library surface — no stringly-typed errors leaking to callers.
 thiserror = "2"
-# Argument parsing for the `md2docx` binary (derive keeps the CLI declaration close to the
-# struct it fills). Only the binary uses it; the library stays dependency-light.
-clap = { version = "4", features = ["derive"] }
+# Argument parsing for the binaries (derive keeps the CLI declaration close to the struct
+# it fills). Optional behind the default `cli` feature, as in every other crate of the
+# suite: a library consumer of `md2star_rs` must not compile an argument parser it never
+# calls. `default-features = false` drops it.
+clap = { version = "4", features = ["derive"], optional = true }
 # Used by the PPTX path to re-pack ppt-rs's output deterministically: ppt-rs stamps a
 # wall-clock timestamp into docProps/core.xml, so we rewrite that one part to a fixed value
 # and repack with a fixed entry mtime — restoring byte-idempotence. (Also our test dev-dep.)
