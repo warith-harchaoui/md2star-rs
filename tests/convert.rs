@@ -287,3 +287,61 @@ fn attr_after(xml: &str, prefix: &str) -> Option<String> {
     let rest = &xml[xml.find(prefix)? + prefix.len()..];
     Some(rest[..rest.find('"')?].to_string())
 }
+
+// --- task lists -----------------------------------------------------------
+// A task-list marker IS the item's content: "- [x] ship it" and "- [ ] ship it"
+// say opposite things. ENABLE_TASKLISTS is on, so the parser hands the state to
+// the reader; discarding it left two identical lines in the .docx and threw
+// away the one bit the syntax exists to carry.
+
+#[test]
+fn task_list_state_reaches_the_document() {
+    let bytes = markdown_to_docx_bytes("- [ ] todo\n- [x] done\n").expect("converts");
+    let xml = entry(&bytes, "word/document.xml").expect("has a document part");
+    assert!(xml.contains('\u{2610}'), "an unchecked box must be visible");
+    assert!(xml.contains('\u{2611}'), "a checked box must be visible");
+}
+
+#[test]
+fn checked_and_unchecked_items_are_distinguishable() {
+    // The regression in one assertion: before the fix both items rendered
+    // identically, so the document could not tell you what had been done.
+    let bytes = markdown_to_docx_bytes("- [ ] same words\n- [x] same words\n").expect("converts");
+    let xml = entry(&bytes, "word/document.xml").expect("has a document part");
+    let unchecked = xml.find('\u{2610}').expect("unchecked box present");
+    let checked = xml.find('\u{2611}').expect("checked box present");
+    assert_ne!(unchecked, checked);
+}
+
+#[test]
+fn an_ordinary_bullet_gets_no_checkbox() {
+    let bytes = markdown_to_docx_bytes("- plain item\n").expect("converts");
+    let xml = entry(&bytes, "word/document.xml").expect("has a document part");
+    assert!(!xml.contains('\u{2610}'));
+    assert!(!xml.contains('\u{2611}'));
+}
+
+// --- what the reader drops, and what it keeps -----------------------------
+// The inline catch-all discards wrappers it does not model (raw HTML tags, math
+// delimiters). That is fine only because the text inside arrives as its own
+// Event::Text and is kept. These pin that distinction, so a future change to
+// the catch-all cannot start swallowing content unnoticed.
+
+#[test]
+fn text_inside_raw_html_is_kept() {
+    let bytes = markdown_to_docx_bytes("Raw <b>bold words</b> here.\n").expect("converts");
+    let xml = entry(&bytes, "word/document.xml").expect("has a document part");
+    assert!(
+        xml.contains("bold words"),
+        "HTML wrappers may go; their text may not"
+    );
+}
+
+#[test]
+fn math_survives_as_literal_text() {
+    // This writer renders no equations, but dropping them would be worse: the
+    // reader at least sees what was written.
+    let bytes = markdown_to_docx_bytes("Inline $E = mc^2$ matters.\n").expect("converts");
+    let xml = entry(&bytes, "word/document.xml").expect("has a document part");
+    assert!(xml.contains("mc^2"));
+}

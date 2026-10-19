@@ -294,11 +294,28 @@ fn push_inline(event: Event, cursor: &mut Cursor, out: &mut Vec<Inline>) {
             let alt = plain_text(&inlines(cursor));
             out.push(Inline::Image(alt));
         }
+        // A task-list marker IS the item's content: "- [x] ship it" and
+        // "- [ ] ship it" say opposite things, and dropping the box leaves two
+        // identical lines in the .docx. `ENABLE_TASKLISTS` is on, so the parser
+        // hands us the state -- discarding it threw away the one bit the
+        // syntax exists to carry.
+        //
+        // Rendered as a Unicode box rather than a Word content control: this
+        // writer owns a plain OOXML run vocabulary, and a checkbox glyph
+        // survives copy-paste, PDF export and plain-text extraction, which a
+        // content control does not.
+        Event::TaskListMarker(checked) => {
+            out.push(Inline::Text(
+                if checked { "\u{2611} " } else { "\u{2610} " }.to_string(),
+            ));
+        }
         // Any other inline container: recurse to stay balanced, ignore the wrapper.
         Event::Start(_) => {
             let _ = inlines(cursor);
         }
-        // Task-list markers, raw HTML, math, etc.: skipped in v0.1.
+        // Raw HTML tags and math delimiters: the wrapper is dropped, but the
+        // text inside arrives as its own `Event::Text` and is kept, so nothing
+        // the reader can see is lost here.
         _ => {}
     }
 }

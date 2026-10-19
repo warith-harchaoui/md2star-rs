@@ -4,6 +4,41 @@ All notable changes to `md2star-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.4] — 2026-10-19
+
+### Fixed
+
+- **Task-list state was parsed and then thrown away.** `ENABLE_TASKLISTS` is
+  on, so `pulldown-cmark` hands the reader an `Event::TaskListMarker(bool)` for
+  every `- [ ]` / `- [x]` item. The inline handler's catch-all discarded it,
+  with a comment reading "Task-list markers, raw HTML, math, etc.: skipped in
+  v0.1" — still there at 0.4.3.
+
+  The result is that `- [ ] ship it` and `- [x] ship it` produced **identical**
+  output. The checkbox is not decoration around the item's content; for a task
+  list it *is* the content, and the document could no longer tell you what had
+  been done.
+
+  Items now carry a Unicode box, `☐` or `☑`. A box rather than a Word content
+  control on purpose: this writer owns a plain OOXML run vocabulary, and the
+  glyph survives copy-paste, PDF export and plain-text extraction, none of
+  which a content control does.
+
+  Both writers are fixed by the one change, since `pptx.rs` consumes the same
+  `Block`/`Inline` AST as the DOCX path. Verified on both outputs.
+
+### Checked, and found sound
+
+- **Nothing else the reader sees is lost.** The same catch-all also drops raw
+  HTML tags and math delimiters, which looked like the same bug. It is not:
+  the text *inside* them arrives as its own `Event::Text` and is kept, so
+  `<b>bold words</b>` keeps its words and `$E = mc^2$` survives as literal
+  text. This writer renders no equations, but a reader of the document still
+  sees what was written. Tests now pin that distinction so a future change to
+  the catch-all cannot start swallowing content unnoticed.
+- **The block-level catch-all was right all along**, and says so: unmodelled
+  blocks are surfaced as a plain paragraph "rather than losing them".
+
 ## [0.4.3] — 2026-10-02
 
 ### Fixed
