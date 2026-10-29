@@ -25,6 +25,10 @@ rules out phones, locked-down machines, and WASM. `md2star-rs` trades Pandoc's b
 a **single self-contained binary** and full ownership of the OOXML it emits — which is why
 it needs none of the original's post-hoc `styles.xml` surgery (`postprocess.py`).
 
+## How it works
+
+![How md2star-rs works: Markdown in, a .docx or .pptx out, with no Pandoc anywhere](https://raw.githubusercontent.com/warith-harchaoui/md2star-rs/main/assets/diagrams/how-it-works.png)
+
 ## Install
 
 ```bash

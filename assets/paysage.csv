@@ -1,0 +1,8 @@
+Markdown vers Office en Rust,Entrée Markdown,Sortie DOCX,Sortie PPTX,Aucun binaire externe,Modèle / styles de référence,CLI prête à l'emploi,Sortie déterministe,Sortie PDF
+md2star-rs,5,5,5,5,5,5,5,1
+docx-rs,1,5,1,5,3,1,4,1
+rdocx,2,5,1,4,4,2,3,5
+rpptx,1,1,5,5,3,1,3,3
+pptxcraft,1,1,4,5,2,1,3,1
+undoc,1,1,1,5,1,3,4,1
+Pandoc,5,5,4,1,5,5,3,5

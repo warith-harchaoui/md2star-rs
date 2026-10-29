@@ -26,6 +26,10 @@ de travail ou en CI, mais cela exclut les téléphones, les machines verrouillé
 maîtrise totale de l'OOXML produit — d'où l'absence de la chirurgie `styles.xml`
 (`postprocess.py`) de l'original.
 
+## Comment ça marche
+
+![Comment md2star-rs fonctionne : du Markdown en entrée, un .docx ou un .pptx en sortie, sans aucun Pandoc](https://raw.githubusercontent.com/warith-harchaoui/md2star-rs/main/assets/diagrams/comment-ca-marche.png)
+
 ## Installation
 
 ```bash
@@ -128,10 +132,10 @@ cargo test --all
 scripts/check-fresh-resolve.sh   # compile sans Cargo.lock, comme un consommateur en aval
 ```
 
-Le dernier existe parce que les trois autres, et la CI, compilent tous contre le
+Le dernier existe parce que les trois autres et la CI, compilent tous contre le
 `Cargo.lock` commité — que personne n'utilise en aval du crate publié. Un intervalle de
 dépendance devenu mauvais reste vert ici tout en cassant chaque `cargo add` / `cargo
-install` neuf, et `cargo publish --dry-run` ne le voit pas non plus (il vérifie avec le
+install` neuf et `cargo publish --dry-run` ne le voit pas non plus (il vérifie avec le
 même lock). La CI lance ce contrôle une fois, sous Linux.
 
 ## Licence
