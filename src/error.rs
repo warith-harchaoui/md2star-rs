@@ -1,7 +1,7 @@
 //! Error type for the crate.
 //!
 //! The library never panics on bad input or a failed write and never prints — it returns
-//! a typed [`Error`] so the binary (or a future WASM/host caller) decides how to surface
+//! a typed [`enum@Error`] so the binary (or a future WASM/host caller) decides how to surface
 //! it. Two failure modes exist today: reading the input file and packing the `.docx` zip.
 
 use thiserror::Error;

@@ -2,8 +2,8 @@
 //!
 //! `pulldown-cmark` hands us a *flat* stream — `Start(tag)`, text, `End(tag)` — where the
 //! nesting is implicit in the order. We rebuild the tree with a cursor and mutual
-//! recursion: [`inlines`] consumes one inline container up to its closing `End`, and
-//! [`blocks`] consumes block containers, recursing into [`inlines`] for their content. The
+//! recursion: `inlines` consumes one inline container up to its closing `End`, and
+//! `blocks` consumes block containers, recursing into `inlines` for their content. The
 //! invariant that keeps this simple: every `Start` has exactly one matching `End`, so a
 //! function that "consumes until its End" always leaves the cursor on the next sibling.
 

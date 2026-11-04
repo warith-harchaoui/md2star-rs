@@ -20,7 +20,7 @@
 //!
 //! Determinism: `ppt-rs` stamps the current wall-clock time into `docProps/core.xml`, which
 //! would break byte-idempotence (two conversions a second apart would differ). We neutralise it
-//! in [`normalize`] — rewriting that one timestamp to a fixed sentinel and re-packing the zip
+//! in `normalize` — rewriting that one timestamp to a fixed sentinel and re-packing the zip
 //! with a fixed entry mtime — so identical Markdown yields byte-identical `.pptx` output on every
 //! run, even across threads, matching the DOCX path's guarantee (see `tests/pptx.rs`).
 

@@ -10,7 +10,7 @@
 //! code blocks (`SourceCode`/`HTMLPreformatted`) and list items (`ListParagraph`) through the
 //! template's named styles when present, falling back to inline formatting otherwise.
 //!
-//! Since v0.2 the writer is stateful (a [`Writer`]) so it can emit two features that need
+//! Since v0.2 the writer is stateful (a `Writer`) so it can emit two features that need
 //! document-level bookkeeping:
 //! - **Native Word list numbering** — real `numbering.xml` levels + `numPr` on paragraphs,
 //!   not a glyph typed into the text. Each ordered list gets its own numbering instance so
@@ -21,7 +21,7 @@
 //! Determinism / idempotence: both footnote ids *and* paragraph ids (`w14:paraId`) come from
 //! our own per-document counters — not `docx-rs`'s process-global atomics — and no timestamps
 //! are written, so the same Markdown yields byte-identical `.docx` output on every run, even
-//! when conversions run concurrently on multiple threads. See [`Writer::new_paragraph`] and
+//! when conversions run concurrently on multiple threads. See `Writer::new_paragraph` and
 //! `tests/convert.rs`.
 //!
 //! Remaining v0.1 limitations still open (tracked follow-ups): links/images render
