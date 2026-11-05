@@ -99,7 +99,7 @@ lignes de puces).
 
 | Markdown | Sortie DOCX |
 |---|---|
-| Titres `#`–`######` | Paragraphes gras à taille graduée, ou les styles `Heading1`…`Heading6` du modèle sous `--reference-doc` |
+| Titres `#`–`######` | Paragraphes gras à taille graduée ; sous `--reference-doc`, les styles `Heading1`…`Heading6` du modèle |
 | Modèle de référence | **`--reference-doc modele.docx`** : hérite styles/thème/polices/mise en page ; titres et citations via les styles nommés |
 | Paragraphes, `**gras**`, `_italique_`, `` `code` `` | Segments au formatage correspondant |
 | Listes à puces et ordonnées | **Numérotation Word native** (`numbering.xml` + `numPr`) ; les puces sont de vraies puces, chaque liste ordonnée repart de son propre premier numéro (`5.` ouvre à 5) ; l'imbrication donne des niveaux de retrait |
