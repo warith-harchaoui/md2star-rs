@@ -31,10 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust (stable + rustfmt + clippy)
+      - name: Install Rust (stable + rustfmt + clippy + the iOS and Android targets)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: aarch64-apple-ios, aarch64-linux-android
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
@@ -49,6 +50,14 @@ jobs:
 
       - name: Tests (unit + integration + doc-tests)
         run: cargo test --all
+
+      # The cross-device claim, checked rather than asserted: the bare core (no CLI, no
+      # ppt-rs and its C) type-checks for iOS and Android. `cargo check` needs the
+      # target's standard library but no linker and no SDK, so a Linux runner proves it.
+      - name: Cross-device check (iOS, Android — core library, no default features)
+        run: |
+          cargo check --lib --no-default-features --target aarch64-apple-ios
+          cargo check --lib --no-default-features --target aarch64-linux-android
 
       # The steps above all build against the committed Cargo.lock, which pins dependency
       # versions no downstream consumer ever sees: a range that has gone bad stays green

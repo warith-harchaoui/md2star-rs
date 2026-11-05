@@ -12,13 +12,45 @@ set -euo pipefail
 echo "pre-push: cargo fmt --all --check"
 cargo fmt --all --check
 
-echo "pre-push: cargo clippy --all-targets -- -D warnings"
-cargo clippy --all-targets -- -D warnings
+# Three feature sets: the default build, the bare core a phone embeds, and
+# everything at once (pdf, net, llm). A lint that only fires under one of them
+# is still a lint.
+for features in "" "--no-default-features" "--all-features"; do
+  echo "pre-push: cargo clippy --all-targets ${features} -- -D warnings"
+  # shellcheck disable=SC2086 # word splitting of $features is the point
+  cargo clippy --all-targets ${features} -- -D warnings
+done
 
 echo "pre-push: cargo test --all"
 cargo test --all
 
-# The three checks above build against the committed Cargo.lock and therefore
+echo "pre-push: cargo test --all --no-default-features"
+cargo test --all --no-default-features
+
+echo "pre-push: cargo doc (warnings are errors)"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --quiet
+
+# Cross-device proof: the core library type-checks for iOS and Android. No
+# linker is needed for `cargo check`, but the target's standard library is, and
+# Homebrew's rustc (often first on PATH) ships none — so use rustup's toolchain
+# explicitly, in a target dir of its own so its different rustc does not
+# invalidate the main build cache.
+if command -v rustup >/dev/null 2>&1; then
+  rustc_bin="$(rustup which rustc --toolchain stable)"
+  cargo_bin="$(rustup which cargo --toolchain stable)"
+  for target in aarch64-apple-ios aarch64-linux-android; do
+    if ! rustup target list --installed --toolchain stable | grep -qx "$target"; then
+      rustup target add "$target" --toolchain stable
+    fi
+    echo "pre-push: cargo check --lib --no-default-features --target ${target}"
+    RUSTC="$rustc_bin" CARGO_TARGET_DIR="$(git rev-parse --show-toplevel)/target/cross" \
+      "$cargo_bin" check --lib --no-default-features --target "$target" --quiet
+  done
+else
+  echo "pre-push: rustup not found — cross-device check skipped (CI still runs it)" >&2
+fi
+
+# The checks above build against the committed Cargo.lock and therefore
 # cannot see a dependency range that has gone bad for everyone downstream.
 echo "pre-push: fresh resolve (no Cargo.lock)"
 "$(git rev-parse --show-toplevel)/scripts/check-fresh-resolve.sh"
