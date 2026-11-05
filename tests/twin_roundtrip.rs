@@ -198,7 +198,15 @@ fn docx_options() -> Options {
     o
 }
 
+// A front-matter title: without one, md2star's rule (kept by the DOCX writer) turns the
+// first `#` heading into the document title, and the twin gives it back as `title:`.
+// The formula is written `x^{2}`, the spelling the OMML → LaTeX reader gives back for
+// the native equation the writer now produces.
 const DOCX_SAMPLE: &str = "\
+---
+title: Round trip
+---
+
 # Results
 
 A paragraph with **bold**, *italic*, `code`, ~~struck~~, H~2~O and 2^10^, plus a
@@ -234,7 +242,7 @@ fn main() {
 }
 ```
 
-Text with $x^2$ inline and an escaped \\*star\\* and snake_case.
+Text with $x^{2}$ inline and an escaped \\*star\\* and snake_case.
 
 [^a]: The note body.
 ";
