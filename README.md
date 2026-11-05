@@ -36,8 +36,24 @@ it needs none of the original's post-hoc `styles.xml` surgery (`postprocess.py`)
 cargo install md2star-rs
 # or from a local clone
 cargo install --path .
-# or build a release binary
-cargo build --release   # → target/release/md2docx
+# or build the release binaries
+cargo build --release   # → target/release/md2star-rs, md2docx, md2pptx
+```
+
+Needs Rust 1.88 or newer. Nothing else: no Pandoc, no system library.
+
+As a library dependency:
+
+```toml
+[dependencies]
+md2star-rs = "0.4"
+```
+
+The default `cli` feature builds the three binaries and pulls in `clap`. A library consumer
+that never calls them can leave it out:
+
+```toml
+md2star-rs = { version = "0.4", default-features = false }
 ```
 
 See [`scripts/brew.sh`](scripts/brew.sh) for a Homebrew-based Rust setup on macOS/Linux.
@@ -158,7 +174,7 @@ cargo fmt --check                            # formatting gate
 cargo clippy --all-targets -- -D warnings    # lint gate (warnings are errors)
 ```
 
-CI runs all three on Linux — one job, deliberately. The heavy, cross-platform testing is the
+CI runs all three on Linux, plus the fresh-resolve check below — one job, deliberately. The heavy, cross-platform testing is the
 local pre-push gate's job (`scripts/install-hooks.sh`); CI confirms what already passed, it
 does not discover.
 
