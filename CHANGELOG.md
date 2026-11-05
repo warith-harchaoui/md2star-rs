@@ -48,6 +48,25 @@ that the core builds for iOS and Android.
   templates, and Pandoc-made reference outputs to compare against.
 - **Cross-device proof in CI and in the pre-push hook**: `cargo check --lib
   --no-default-features` for `aarch64-apple-ios` and `aarch64-linux-android`.
+- **BibTeX and citations, in pure Rust** (`md2star_rs::bib`): a BibTeX parser
+  (`@string` macros, `#` concatenation, nested braces, `@comment`/`@preamble`,
+  LaTeX accents and dashes decoded, names in the three BibTeX forms with their
+  particles, `{Protected}` corporate names) and two built-in styles chosen by
+  `--citation-style`, `citation-style:` or the *name* of a `csl:` file:
+  Chicago author-date, Pandoc's default (`(Pearl 2009, 3; see also Pearl
+  2000)`, `Pearl (2009, chap. 2)`, `(2000)`, `2009a`/`2009b`, `———.` for a
+  repeated author), and IEEE numeric (`[1, p. 3]`, `[2], [1]`). An unknown key
+  stays as written, in bold, with a warning. The reference list goes into a
+  `::: {#refs}` div or at the end under `--bibliography-name`,
+  `reference-section-title` or the localised "Bibliography"; `nocite` is read.
+  CSL files themselves are not read.
+- **A LaTeX → OMML converter** (`docx::math`): fractions, scripts, roots, n-ary
+  operators with bounds, limits under `\lim`/`\max`, `\left…\middle…\right`
+  and matched brackets, the matrix environments (`pmatrix`, `bmatrix`, `cases`,
+  `aligned`, `array`…), accents, over/under braces, `\mathbf`/`\mathbb`/
+  `\mathcal`/`\text`/`\operatorname`, Greek letters, operators, relations and
+  arrows, written as the same OMML structures Pandoc writes. An unknown command
+  stays readable in the equation and raises a warning; nothing fails.
 
 ### Changed
 
