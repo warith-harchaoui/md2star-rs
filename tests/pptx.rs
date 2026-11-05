@@ -4,9 +4,7 @@
 //! each `ppt/slides/slideN.xml` (text lives in `<a:t>…</a:t>` runs) to assert that Markdown mapped
 //! onto slides the way the writer promises — one slide per `#`, body flattened to bullets.
 //!
-//! These pin the v0.4 `ppt-rs` writer, which only exists with the `legacy-pptx` feature.
-
-#![cfg(feature = "legacy-pptx")]
+//! The writer is pure Rust and always compiled: these run in every feature set.
 
 use std::io::{Cursor, Read};
 
@@ -105,7 +103,7 @@ fn pptx_conversion_is_idempotent() {
 
 #[test]
 fn pptx_conversion_is_idempotent_under_concurrency() {
-    // ppt-rs pulls in `uuid`; guard against any hidden process-global randomness by converting
+    // Guard against any hidden process-global state (a shape-id counter, a hash seed) by converting
     // from many threads at once and requiring a single distinct byte string (the same regression
     // shape that caught docx-rs's global paragraph-id counter on the DOCX side).
     use std::collections::HashSet;

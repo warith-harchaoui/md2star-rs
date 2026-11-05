@@ -26,28 +26,44 @@ pub struct AuditArgs {
     pub min_pt: Option<f32>,
 }
 
-/// Run `audit`.
+/// Run `audit`: print every finding (or the JSON array) and the summary line, then
+/// exit as `md2star audit` does — 0 when nothing but observations were found, 1 on a
+/// defect (an overrun counts only with `--strict`), 2 when the deck cannot be read.
 ///
 /// # Errors
 ///
-/// The deck cannot be read or audited; [`Error::Unsupported`] until the audit is ported.
+/// None in practice: every failure ends the process with its own status.
 pub fn run(args: &AuditArgs) -> Result<()> {
-    let bytes = fs::read(&args.deck)?;
+    use std::io::Write as _;
+    if !args.deck.is_file() {
+        eprintln!("md2star-rs audit: no such file: {}", args.deck.display());
+        std::process::exit(2);
+    }
     let options = AuditOptions {
         min_pt: args.min_pt,
         strict: args.strict,
     };
-    let report = audit(&bytes, &options)?;
-    // The report's rendering (text and --json) and the exit status on findings are the
-    // PPTX port's to write; until then a report can only come back empty.
-    if !report.findings.is_empty() {
-        return Err(Error::unsupported("printing audit findings"));
+    let report = match fs::read(&args.deck)
+        .map_err(Error::from)
+        .and_then(|bytes| audit(&bytes, &options))
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("md2star-rs audit: cannot read {}: {e}", args.deck.display());
+            std::process::exit(2);
+        }
+    };
+    if args.json {
+        println!("{}", report.to_json());
+    } else {
+        for finding in &report.findings {
+            println!("{finding}");
+        }
+        println!("{}", report.summary());
     }
-    let _ = args.json;
-    println!(
-        "{}: {} slide(s), no findings",
-        args.deck.display(),
-        report.slides
-    );
+    let _ = std::io::stdout().flush();
+    if report.fails(args.strict) {
+        std::process::exit(1);
+    }
     Ok(())
 }

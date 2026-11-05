@@ -14,7 +14,7 @@ edition = "2021"
 # crate's own code; the 1.74 declared until 0.4.3 had quietly stopped being true.
 rust-version = "1.88"
 license = "Apache-2.0"
-description = "Pure-Rust Markdown → DOCX and PPTX writer (pulldown-cmark → AST → docx-rs / ppt-rs). A Pandoc-free spin-off of md2star."
+description = "Pure-Rust Markdown → DOCX and PPTX writer (pulldown-cmark → AST → docx-rs / a template-driven PresentationML writer). A Pandoc-free spin-off of md2star."
 repository = "https://github.com/warith-harchaoui/md2star-rs"
 homepage = "https://deraison.ai/ai-helpers"
 documentation = "https://docs.rs/md2star-rs"
@@ -50,14 +50,8 @@ required-features = ["cli"]
 [features]
 # On by default so `cargo install md2star-rs` still yields the three binaries.
 # Library consumers turn it off with `default-features = false`.
-default = ["cli", "legacy-pptx", "svg"]
+default = ["cli", "svg"]
 cli = ["dep:clap"]
-# The v0.4 PPTX writer on ppt-rs (src/pptx/legacy.rs). ppt-rs pulls zip 0.6 with its
-# default features, which compile bzip2 and zstd from C: that C is what a pure-Rust core
-# for iOS/Android cannot carry, so it lives behind this feature until the PPTX port
-# replaces it with a pure-Rust PresentationML writer. `--no-default-features` builds
-# without it (and PPTX output then answers "not ported yet").
-legacy-pptx = ["dep:ppt-rs"]
 # SVG images in DOCX get the PNG fallback Word requires, rasterised in process by resvg
 # (pure Rust). Without it an SVG is embedded behind a transparent placeholder.
 svg = ["dep:resvg"]
@@ -71,7 +65,7 @@ mermaid = ["dep:mermaid-rs-renderer"]
 # Off by default: the core makes no network access and needs no TLS stack.
 net = ["dep:ureq"]
 # Model-assisted layout selection through an OpenAI-compatible endpoint (src/llm.rs).
-llm = ["net"]
+llm = ["net", "dep:serde_json"]
 
 [dependencies]
 # CommonMark + GFM reader. We drive it in *event* mode and fold the flat event stream into
@@ -80,19 +74,6 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # The OOXML writer. Unlike Pandoc we own `styles.xml`, so nothing gets stripped after the
 # fact — this is what makes the original md2star's `postprocess.py` zip-surgery unnecessary.
 docx-rs = "0.4"
-# The PresentationML (.pptx) writer for `md2pptx`. Its lean default feature set (thiserror,
-# uuid, xml-rs, zip) is the same league as docx-rs; the heavy `cli`/`mcp`/`web2ppt` features
-# stay off. It ships the slide-master/layout/theme scaffolding a deck needs, and its output is
-# byte-deterministic (fixed doc timestamp, stable ids) so md2pptx stays idempotent like md2docx.
-# Pinned exactly: 0.2.23 through 0.2.25 don't compile with `default-features = false`
-# (`src/export/slide_render.rs` names `pdfrs` outside the feature gate that pulls it in).
-# Our Cargo.lock hid this locally — a fresh `cargo install md2star-rs` resolves the caret
-# range to the newest patch and fails. Filed upstream as
-# https://github.com/yingkitw/ppt-rs/issues/11 — unpin once that lands. Re-checked
-# 2026-10-02: the issue is still open and 0.2.27 still fails the same way (verified by
-# building a scratch crate against `ppt-rs = "0.2", default-features = false`), so the
-# pin stays.
-ppt-rs = { version = "=0.2.22", default-features = false, optional = true }
 # Typed error enums for the library surface — no stringly-typed errors leaking to callers.
 thiserror = "2"
 # Argument parsing for the binaries (derive keeps the CLI declaration close to the struct
@@ -100,12 +81,9 @@ thiserror = "2"
 # suite: a library consumer of `md2star_rs` must not compile an argument parser it never
 # calls. `default-features = false` drops it.
 clap = { version = "4", features = ["derive"], optional = true }
-# Used by the PPTX path to re-pack ppt-rs's output deterministically: ppt-rs stamps a
-# wall-clock timestamp into docProps/core.xml, so we rewrite that one part to a fixed value
-# and repack with a fixed entry mtime — restoring byte-idempotence. (Also our test dev-dep.)
-# Deflate only: zip's default features compile bzip2 and zstd from C, which a pure-Rust
-# core for iOS/Android cannot carry. (ppt-rs still pulls zip 0.6 with those defaults —
-# see the PPTX port.)
+# Every OOXML container (DOCX, PPTX, templates read back) is a zip. Deflate only: zip's
+# default features compile bzip2 and zstd from C, which a pure-Rust core for iOS/Android
+# cannot carry. The PPTX writer packs with a fixed entry mtime for byte-idempotence.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # YAML front matter. Pure Rust, YAML 1.2, no serde: we convert its tree to our own
 # `MetaValue` so the AST does not leak a third-party type.
@@ -127,6 +105,13 @@ ureq = { version = "3", optional = true }
 # raster images embedded inside SVGs: what diagrams in documents need, nothing else.
 resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts"], optional = true }
 # PPTX port:
+# Font metrics for fitting text into placeholders: the theme fonts' real advance widths
+# (cmap + hmtx), pure Rust, no_std-capable; only `std` is enabled (no OpenType layout,
+# no variable-font machinery). Without a font file the documented fallback applies.
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
+# The OpenAI-compatible chat client of `--smart-layout` (feature `llm`): requests and
+# answers are JSON.
+serde_json = { version = "1", optional = true }
 # twin + PDF port:
 # Typst as a library: the compiler, its PDF exporter, its layout engine (where
 # `PagedDocument` lives) and its fonts (Libertinus Serif, New Computer Modern + Math,

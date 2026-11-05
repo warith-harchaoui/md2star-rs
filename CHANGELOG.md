@@ -41,7 +41,7 @@ that the core builds for iOS and Android.
   `md2pptx` are the same commands under their old names. A flag that is not
   honoured yet warns; a subcommand that is not ported yet exits with
   `not ported yet: …`.
-- **Cargo features** `pdf`, `net`, `llm`, and `legacy-pptx` (default).
+- **Cargo features** `pdf`, `net` and `llm`.
 - **Shared fixtures** in `tests/fixtures/`: a document using every
   construction, a deck exercising layout hints, md2star's own fixtures and
   examples, PNG/JPEG/SVG images, two `.bib`, md2star's `.docx`/`.pptx`
@@ -131,6 +131,47 @@ that the core builds for iOS and Android.
   machine's fonts, so the SVG is stable on one machine but not identical across
   machines, and it caches one font under `~/.cache/mmdr`. Without the feature,
   a diagram stays a readable code block with a `mermaid-not-rendered` warning.
+- **A PPTX writer in pure Rust, built on the template.** The deck keeps the
+  template's masters, theme and layouts (md2star's own `template.pptx` is bundled
+  as the default; `--reference-doc` / `--template` pass another) and each slide
+  instantiates the placeholders of its layout by type and index: no "Click to add
+  title" ghost, no generic scaffold. Speaker notes become `notesSlide` parts (a
+  notes master is added when the template has none), tables real `a:tbl`, code a
+  dark panel in a monospaced face (`MD2STAR_MONO_FONT`, else Consolas), links real
+  hyperlinks, pictures `p:pic` with their alt text (SVG as `svgBlip` with a PNG
+  stand-in), a picture title's URL a short credit on the photo linking the page
+  (md2star 3.12's `short_credit`), footnotes superscripts and a closing "Notes"
+  slide. The output is byte-identical from one run to the next.
+- **Deterministic layout selection.** Slides are cut at `#`/`##` and `---`; a
+  front-matter title no slide carries becomes the cover, whose subtitle gathers the
+  front matter's `subtitle`, author and date; an `#` after the cover is a section.
+  `{layout="Name"}` names a layout exactly (a case-only match is honoured and said;
+  an unknown name warns); `.statement`, `.bignumber`, `.quote`, `.recap`,
+  `.agenda`, `.section`, `.closing`, `.cover`, `.photo` ask for a role; a bold
+  figure alone, a quotation, one short sentence, a lone figure and `::: columns`
+  are recognised by their form. Everything else is ranked by a fit score read off
+  the template's placeholder geometry, with text measured by the theme fonts' real
+  advance widths (`ttf-parser`; 0.55 em per character when the font file is not on
+  the machine) and lines broken by md2star's semantic line-breaking rules.
+- **`--min-pt N`**: no text is set under N points. A slide no layout holds moves
+  to a roomier layout or is split into "(cont.)" / "(suite)" slides between list
+  items, paragraphs, table rows or code lines; a cover's subtitle box grows
+  instead; nothing is ever shrunk.
+- **`--smart-layout` (feature `llm`)**: a language model behind an
+  OpenAI-compatible endpoint (best-engine-ai-helper's `/v1`, `model="best"`)
+  arbitrates near-ties only, through the `LayoutJudge` trait a host app can
+  implement itself (plain strings across an FFI boundary). It is told facts in
+  words, its answer is checked against the candidates, a failure leaves the
+  deterministic choice, and verdicts are cached under a hash of the slide, the
+  candidates and the model.
+- **`md2star-rs audit deck.pptx [--min-pt N] [--json] [--strict]`**: off-slide
+  shapes, overlapping text, a picture over text, empty placeholders, type under
+  12 pt, text under `--min-pt` (footer chrome exempt) and overruns, with each
+  shape's box and each run's size resolved through layout and master. Same kinds,
+  JSON keys and exit codes (0 / 1 / 2) as `md2star audit`; contrast is not checked
+  yet.
+- **`md2star-rs templates list | export | layouts [PPTX]`**: the bundled
+  templates, and what the layout selector reads in any `.pptx`.
 
 ### Changed
 
@@ -152,9 +193,11 @@ that the core builds for iOS and Android.
   places it.
 - A `.bib` that cannot be read or parsed is a warning, not a failed conversion:
   the citations it would have resolved stay as written.
-- The `ppt-rs` writer moved behind the default feature `legacy-pptx`. ppt-rs
-  pulls `zip` 0.6 with bzip2 and zstd compiled from C; that C is what kept the
-  core from building for iOS and Android. Our own `zip` is now deflate-only.
+- PPTX output no longer depends on `ppt-rs`: the v0.4 writer and the
+  `legacy-pptx` feature that quarantined it are gone, and with them `zip` 0.6
+  with bzip2 and zstd compiled from C. The crate is pure Rust for PPTX too, and
+  `--no-default-features` writes decks on iOS and Android. Our own `zip` is
+  deflate-only.
 - `Error` is `#[non_exhaustive]` and gains `Unsupported`, `Resource`, `Bib`,
   `Math`, `Pdf`, `Read` and `Llm`.
 

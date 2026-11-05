@@ -185,10 +185,8 @@ pub fn convert_path_with_reference(input: &Path, output: &Path, reference: &Path
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "legacy-pptx")] {
 /// let bytes = md2star_rs::markdown_to_pptx_bytes("# Title\n\n- one\n- two").unwrap();
 /// assert_eq!(&bytes[..2], b"PK");
-/// # }
 /// ```
 pub fn markdown_to_pptx_bytes(markdown: &str) -> Result<Vec<u8>> {
     pptx::build(&reader::parse(markdown))

@@ -1,18 +1,23 @@
-//! Templates compiled into the binary, for `md2star-rs templates`.
+//! Templates compiled into the binary, for `md2star-rs templates` and as the default
+//! of every conversion.
 //!
-//! # What this module must do
+//! md2star-rs carries the Python md2star's own reference templates (`data/template.pptx`
+//! and `data/template.docx`, copied byte for byte into `assets/templates/`), so a
+//! conversion has a good default without any file or network access. The Python version
+//! also fetches a remote default (`deraison.ai/template.*`): that is not ported — no
+//! network by default.
 //!
-//! List the reference templates md2star-rs carries (a `.docx` and a `.pptx`, from the
-//! Python md2star's `data/`) so a conversion has a good default without any file or
-//! network access, and print or extract one on demand. The Python version also resolves
-//! per-project and cached templates; that lookup is a CLI concern and may be ported, the
-//! remote default template (`deraison.ai/template.*`) is not — no network by default.
-//!
-//! Owned by the PPTX port (see [`crate::pptx`]); the DOCX port registers its own
-//! template here too.
+//! Owned by the PPTX port (see [`crate::pptx`]); the DOCX template is registered here
+//! too, so `md2star-rs templates list` shows both.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::options::Format;
+
+/// The default PowerPoint template: md2star's `data/template.pptx`.
+pub const DEFAULT_PPTX: &[u8] = include_bytes!("../assets/templates/default.pptx");
+
+/// The default Word template: md2star's `data/template.docx`.
+pub const DEFAULT_DOCX: &[u8] = include_bytes!("../assets/templates/default.docx");
 
 /// A template compiled into the binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +34,49 @@ pub struct BundledTemplate {
 ///
 /// # Errors
 ///
-/// Today: always [`Error::Unsupported`] — no template is bundled yet.
+/// None today; the `Result` keeps room for templates read lazily.
+///
+/// # Examples
+///
+/// ```
+/// use md2star_rs::{templates::bundled, Format};
+/// let all = bundled().unwrap();
+/// assert!(all.iter().any(|t| t.format == Format::Pptx && t.name == "default"));
+/// ```
 pub fn bundled() -> Result<Vec<BundledTemplate>> {
-    Err(Error::unsupported("bundled templates"))
+    Ok(vec![
+        BundledTemplate {
+            name: "default",
+            format: Format::Docx,
+            bytes: DEFAULT_DOCX,
+        },
+        BundledTemplate {
+            name: "default",
+            format: Format::Pptx,
+            bytes: DEFAULT_PPTX,
+        },
+    ])
+}
+
+/// The bundled template for `format` (`None` for PDF, which has none of its own).
+pub fn default_for(format: Format) -> Option<&'static [u8]> {
+    match format {
+        Format::Docx => Some(DEFAULT_DOCX),
+        Format::Pptx => Some(DEFAULT_PPTX),
+        Format::Pdf => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bundled_templates_are_office_files() {
+        for t in bundled().unwrap() {
+            assert_eq!(&t.bytes[..2], b"PK", "{} {:?}", t.name, t.format);
+        }
+        assert_eq!(default_for(Format::Pptx), Some(DEFAULT_PPTX));
+        assert_eq!(default_for(Format::Pdf), None);
+    }
 }

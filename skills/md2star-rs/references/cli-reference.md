@@ -24,7 +24,7 @@ md2star-rs pptx      <INPUT.md> [common flags] [deck flags]     (= md2pptx)
 md2star-rs pdf       <INPUT.md> [common flags]
 md2star-rs twin      <INPUT.docx|INPUT.pptx> [--out DIR] [--no-images]
 md2star-rs audit     <DECK.pptx> [--json] [--strict] [--min-pt N]
-md2star-rs templates list | export <docx|pptx> <OUT>
+md2star-rs templates list | export <docx|pptx> <OUT> | layouts [TEMPLATE.pptx]
 ```
 
 Common flags, aligned on the Python `md2star <cmd> --help` where they mean
@@ -42,8 +42,35 @@ Deck flags: `--template PATH` (wins over `--reference-doc`), `--min-pt N`,
   does: its styles, theme, fonts, settings, page setup, headers and footers are
   kept; every paragraph and character style is taken from it by id or by name
   (a French Word's `Titre1` is its `heading 1`), and a style it lacks is added.
-- For a deck, each `#` heading starts a slide and the body flattens to bullets
-  (the v0.4 writer, kept behind the default `legacy-pptx` feature).
+- For a deck, `#`/`##` and `---` cut slides and each slide lands on a layout of
+  the template (the bundled default, or `--reference-doc` / `--template`): an
+  explicit `{layout="Name"}`, a role class (`.statement`, `.bignumber`,
+  `.quote`, `.recap`, `.agenda`, `.section`, `.closing`, `.cover`, `.photo`), a
+  recognised form, else the best measured fit. `::: notes` go to the notes pane.
+- `--min-pt N` sets nothing under N points: a slide that no layout holds is split
+  into "(cont.)" / "(suite)" slides, never shrunk.
+- `--smart-layout` (build feature `llm`) lets the model at `--llm-endpoint` (or
+  `MD2STAR_LLM_ENDPOINT`; `--llm-model`, default `best`) break near-ties between
+  layouts that fit. Without the feature or the endpoint it warns and the
+  deterministic choice stands.
+
+## `audit`
+
+`md2star-rs audit deck.pptx` reads any `.pptx` and prints one line per finding,
+then a summary: `layout audit: clean (12 slides)` or `layout audit: 3 findings on
+2 slides (1 overlap, 2 under-min-pt)`. Kinds, as in `md2star audit`: `off-slide`,
+`overlap` (text on text, or a picture over text), `ghost-placeholder`,
+`illegible-type` (under 12 pt), `under-min-pt` (with `--min-pt N`; footer chrome
+exempt), `overrun` (an observation; a failure with `--strict`). `--json` prints
+the findings as an array of `{slide, kind, detail, shape[, measured_pt,
+fits_pt]}`. Exit `0` when nothing but observations were found, `1` on a defect,
+`2` when the deck cannot be read.
+
+## `templates`
+
+`templates list` shows the bundled templates, `templates export pptx out.pptx`
+writes one out, and `templates layouts [deck.pptx]` lists a template's layouts
+with the role md2star-rs reads in each and every placeholder's box and size.
 
 ## `docx`
 
@@ -76,11 +103,9 @@ What `md2star docx` (Pandoc underneath) does, in process:
 ## Not ported yet — and how that shows
 
 The full port of md2star is in progress. A flag that is accepted but not
-honoured yet (a deck's `--reference-doc`/`--template`,
-`--min-pt`, `--smart-layout`) produces a warning on stderr naming it; the
-conversion still runs. A subcommand that is not ported yet (`audit`,
-`templates`) exits non-zero with `not ported yet: …`. Nothing is
-ignored silently.
+honoured yet produces a warning on stderr naming it; the conversion still runs.
+A subcommand that is not ported yet exits non-zero with `not ported yet: …`.
+Nothing is ignored silently.
 
 Pandoc pass-through flags, `--skip-phase`, `--lint` and
 `--no-remote-templates` do not apply to an in-process converter with no Pandoc
