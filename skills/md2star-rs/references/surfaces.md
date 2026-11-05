@@ -6,9 +6,11 @@ installable agent skill. This crate carries three.
 
 ## What exists
 
-**Library** — `cargo add md2star-rs`. The primary surface. The `_bytes`
-variants never touch the filesystem, which is what lets a server or a WASM
-shell use the crate without a scratch directory.
+**Library** — `cargo add md2star-rs`. The primary surface, and the one an iOS or
+Android app embeds (`default-features = false`). Every call takes and returns
+bytes in memory, with its warnings beside the output; the `LayoutJudge` trait
+takes plain strings, so a host app can implement it across an FFI boundary with
+its own on-device model.
 
 **Three CLIs** — `md2star-rs`, plus `md2docx` and `md2pptx`. The last two
 predate this suite's "name the binary after the crate" convention and therefore
@@ -30,23 +32,23 @@ every MCP tool **is** one of its routes and the two cannot drift apart. Rust
 has no equivalent of that mounting, so an MCP surface here would have to be a
 separate implementation of the same tools.
 
-**No GUI, no PDF, no document-to-Markdown twin mode.**
+**No GUI.** A cross-device library has no window of its own; the app that
+embeds it has one.
 
 ## Fidelity, not just language
 
-This is the one crate in the suite where the Rust and Python implementations
-differ in **output fidelity**, not only in ergonomics. Choosing wrongly
-produces a document that is quietly missing something rather than an error.
+Since 0.5 the two implementations do the same work: DOCX with citations,
+equations and images, decks on template layouts, PDF, twin and audit. What
+remains different is listed here, because choosing wrongly produces a document
+quietly missing something rather than an error.
 
 | Need | Reach for |
 |---|---|
 | A single binary, nothing to install | `md2star-rs` |
-| DOCX or PPTX bytes in memory | `md2star-rs` |
-| Rust calling code | `md2star-rs` |
-| Citations, a bibliography, `[@key]` | Python `md2star` |
-| Math surviving into Word | Python `md2star` |
-| Embedded images, hyperlink relations | Python `md2star` |
-| Images or shapes in a deck | Python `md2star` |
-| PDF output | Python `md2star` |
-| Reading a PDF/DOCX/PPTX back into Markdown | Python `md2star` |
+| A phone or tablet app, no network | `md2star-rs` |
+| Office or PDF bytes in memory, Rust calling code | `md2star-rs` |
+| Byte-identical output run after run | `md2star-rs` |
+| A full CSL style (APA, Vancouver… exactly) | Python `md2star` |
+| Reading a PDF back into Markdown (OCR) | Python `md2star` |
+| Cloning a template's example slides, a visual judge | Python `md2star` |
 | HTTP API, MCP tools, GUI | Python `md2star` |

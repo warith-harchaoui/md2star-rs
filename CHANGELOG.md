@@ -4,11 +4,36 @@ All notable changes to `md2star-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] — 2026-11-05
 
-The foundation of the full port of md2star: one reader and one AST every backend
-shares, the module layout the DOCX, PPTX and twin/PDF ports fill in, and the proof
-that the core builds for iOS and Android.
+The full port of md2star, for every device: one reader and one AST, DOCX and PPTX
+written by our own OOXML writers, PDF through Typst in memory, `twin` (DOCX/PPTX →
+Markdown), `audit` and `templates`, with no Pandoc, no LibreOffice and no subprocess.
+The core builds for iOS and Android, and CI proves it on every push.
+
+**Why 0.5.0 and not 0.4.5.** The public API changes in ways a 0.4 caller can see: the
+`docx-rs` types leave the API (`docx::build` returns bytes, `docx::pack` and the
+deprecated `md2star_rs::writer` alias are gone), the v0.4 entry points produce a
+different (much richer) document, `Error` gains variants. Under SemVer's 0.x rule a
+breaking change bumps the minor version.
+
+### Breaking
+
+- **`docx-rs` is no longer a dependency, and no `docx_rs` type is in the API.**
+  `markdown_to_docx_bytes`, `markdown_to_docx_bytes_with_reference`,
+  `markdown_to_docx_file`, `convert_path` and `convert_path_with_reference` now go
+  through the full writer (`docx::render`): the same document `convert` and the CLI
+  write, equations, images, hyperlinks and all. `docx::build(&[Block])` and
+  `docx::build_with_reference(&[Block], &[u8])` return `Result<Vec<u8>>` instead of
+  a `docx_rs::Docx`; `docx::pack` is gone; the deprecated `md2star_rs::writer` alias
+  is gone. The 740-line v0.4 writer is deleted.
+- **md2star's `template.docx` is the default DOCX style**, compiled in, as `md2star
+  docx` uses it: a conversion without `--reference-doc` now has md2star's look (A4,
+  half-inch margins, its fonts and table styles) instead of a bare package. Pass a
+  reference document to change it.
+- A checked task box is `☒` (Pandoc's), no longer `☑`.
+- `Error::Unsupported` reads `not supported: …` (it said `not ported yet: …`,
+  which stopped being true).
 
 ### Added
 
@@ -46,8 +71,10 @@ that the core builds for iOS and Android.
   construction, a deck exercising layout hints, md2star's own fixtures and
   examples, PNG/JPEG/SVG images, two `.bib`, md2star's `.docx`/`.pptx`
   templates, and Pandoc-made reference outputs to compare against.
-- **Cross-device proof in CI and in the pre-push hook**: `cargo check --lib
-  --no-default-features` for `aarch64-apple-ios` and `aarch64-linux-android`.
+- **Cross-device proof in CI and in the pre-push hook**: `cargo check --lib` for
+  `aarch64-apple-ios` and `aarch64-linux-android`, bare, with `svg`, and with
+  `svg,pdf,mermaid` (CI sets the runner's clang as the targets' C compiler for
+  Typst's `psm`). The Ubuntu job also lints `--all-features`.
 - **BibTeX and citations, in pure Rust** (`md2star_rs::bib`): a BibTeX parser
   (`@string` macros, `#` concatenation, nested braces, `@comment`/`@preamble`,
   LaTeX accents and dashes decoded, names in the three BibTeX forms with their
@@ -127,7 +154,8 @@ that the core builds for iOS and Android.
   Tested by reading the PDFs back with poppler where installed.
 - **Mermaid → SVG in process** (feature `mermaid`, `mermaid::render_mermaid`),
   through the pure-Rust `mermaid-rs-renderer`: flowchart, sequence and pie
-  render cleanly; the PDF writer embeds them. Its text measurement uses the
+  render cleanly; the DOCX writer (a centred picture with its PNG fallback), the
+  PPTX writer and the PDF writer all draw them. Its text measurement uses the
   machine's fonts, so the SVG is stable on one machine but not identical across
   machines, and it caches one font under `~/.cache/mmdr`. Without the feature,
   a diagram stays a readable code block with a `mermaid-not-rendered` warning.
@@ -168,8 +196,23 @@ that the core builds for iOS and Android.
   shapes, overlapping text, a picture over text, empty placeholders, type under
   12 pt, text under `--min-pt` (footer chrome exempt) and overruns, with each
   shape's box and each run's size resolved through layout and master. Same kinds,
-  JSON keys and exit codes (0 / 1 / 2) as `md2star audit`; contrast is not checked
-  yet.
+  JSON keys and exit codes (0 / 1 / 2) as `md2star audit`.
+- **`low-contrast` in `audit`**, md2star's WCAG check: each run that states its own
+  colour against what is behind its shape (the shape's fill, the shapes under it,
+  the slide's background, the layout's shapes and background, the master's), held
+  to 3:1 for large type (18 pt, 14 pt bold) and 4.5:1 otherwise; a picture or a
+  gradient behind the text leaves it unjudged. Further than md2star (python-pptx
+  reads RGB only): theme colours are resolved through the master's colour map and
+  any override, with `lumMod`/`lumOff`/`shade`/`tint`, and so are fills given by
+  reference to the theme (`fillRef`, `bgRef`). `audit::contrast_ratio` is public.
+- **`twin` reads the equations of a slide.** The PPTX writer puts them under
+  `a14:m` inside `mc:AlternateContent`; the twin now turns that OMML back into
+  `$…$` / `$$…$$` (it used to drop them, leaving an empty bullet).
+- **`tests/no_personal_paths.rs`**: no tracked file names a machine's path, and no
+  Rust string literal is a hard-coded absolute path (the Typst virtual paths and
+  fontconfig's local folder are listed exceptions, with their reason). Windows
+  fonts are found through `%SystemRoot%` instead of a literal `C:\Windows`.
+- `tests/templates_cli.rs`: `templates list`, `export` and `layouts` end to end.
 - **`md2star-rs templates list | export | layouts [PPTX]`**: the bundled
   templates, and what the layout selector reads in any `.pptx`.
 
@@ -183,12 +226,12 @@ that the core builds for iOS and Android.
 - The pre-push hook also runs the tests with `--features pdf,mermaid` and checks
   that build for iOS and Android.
 
-- The DOCX writer moved to `md2star_rs::docx` (`md2star_rs::writer` remains as
-  a deprecated alias). Superscript and subscript are real vertical alignment,
-  inline notes are real Word footnotes, and speaker notes stay out of the
-  document. `docx::build` / `build_with_reference` (and the v0.4 functions built
-  on them, `markdown_to_docx_bytes*`) keep the v0.4 `docx-rs` writer, since they
-  return a `docx_rs::Docx`; `convert`, `docx::render` and the CLI use the new one.
+- The DOCX writer moved to `md2star_rs::docx`. Superscript and subscript are real
+  vertical alignment, inline notes are real Word footnotes, and speaker notes stay
+  out of the document.
+- The pre-push hook runs the tests with `--all-features`, and the fresh-resolve
+  check twice, with `--no-default-features` and with `--all-features`
+  (`scripts/check-fresh-resolve.sh` now passes its arguments to `cargo build`).
 - A table caption now precedes its table, in the `TableCaption` style, as Pandoc
   places it.
 - A `.bib` that cannot be read or parsed is a warning, not a failed conversion:
@@ -200,6 +243,17 @@ that the core builds for iOS and Android.
   deflate-only.
 - `Error` is `#[non_exhaustive]` and gains `Unsupported`, `Resource`, `Bib`,
   `Math`, `Pdf`, `Read` and `Llm`.
+
+### Fixed
+
+- **Two consecutive code blocks no longer merge on the way back.** The DOCX writer
+  set them as two adjacent `SourceCode` paragraphs, which `twin` (like any reader of
+  Word documents, where a listing is often one paragraph per line) read as one
+  block. An empty paragraph now separates them, and `twin` ends a code block at an
+  empty paragraph. Proven by the round-trip test going red without the separator.
+- **`md2star-rs templates layouts | head` panicked** on the closed pipe; every line
+  the CLI prints now ends the process quietly when the reader has gone.
+- `md2star-rs --help` no longer says PDF, twin and audit are "being ported".
 
 ## [0.4.4] — 2026-10-19
 

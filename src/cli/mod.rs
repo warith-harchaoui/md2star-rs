@@ -16,6 +16,20 @@
 //! the written path to stdout, and an error ends the process with status 1 after one
 //! `md2star-rs: …` line.
 
+/// `println!` that ends the process quietly when stdout is closed (`| head`): a
+/// broken pipe is the reader saying it has seen enough, not an error to panic on.
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        if let Err(e) = writeln!(std::io::stdout().lock(), $($arg)*) {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            }
+            panic!("cannot write to stdout: {e}");
+        }
+    }};
+}
+
 pub mod audit;
 pub mod docx;
 pub mod pdf;
@@ -33,8 +47,8 @@ use crate::ast::Warning;
 use crate::error::Result;
 use crate::options::{Format, Options};
 
-/// Markdown → DOCX and PPTX, pure Rust: no Pandoc, no LibreOffice, nothing shelled
-/// out. PDF, twin and audit are being ported and say so when run.
+/// Markdown → DOCX, PPTX and PDF, and Office files back to Markdown, in pure Rust: no
+/// Pandoc, no LibreOffice, nothing shelled out.
 #[derive(Parser, Debug)]
 #[command(name = "md2star-rs", version)]
 pub struct Cli {
@@ -54,7 +68,7 @@ pub enum Command {
     Pdf(pdf::PdfArgs),
     /// Read a .docx or .pptx back into an editable Markdown twin.
     Twin(twin::TwinArgs),
-    /// Report overlaps, off-canvas shapes and unreadable type in any .pptx.
+    /// Report overlaps, off-canvas shapes, unreadable type and low contrast in any .pptx.
     Audit(audit::AuditArgs),
     /// Inspect the templates compiled into this binary.
     Templates(templates::TemplatesArgs),
@@ -86,7 +100,7 @@ pub struct ConvertArgs {
     /// Bibliography file (BibTeX). Repeatable.
     #[arg(long, value_name = "FILE")]
     pub bib: Vec<PathBuf>,
-    /// Heading inserted before the bibliography (default: localised "References").
+    /// Heading inserted before the bibliography (default: localised "Bibliography").
     #[arg(long, value_name = "TEXT")]
     pub bibliography_name: Option<String>,
     /// Citation style: `author-date` (default) or `numeric`.
@@ -169,7 +183,7 @@ pub fn convert_file(args: &ConvertArgs, format: Format, options: &Options) -> Re
     fs::write(&output, &rendered.bytes)?;
     report_warnings(&rendered.warnings, args.verbosity);
     if !args.verbosity.quiet {
-        println!("wrote {}", output.display());
+        out!("wrote {}", output.display());
     }
     Ok(())
 }

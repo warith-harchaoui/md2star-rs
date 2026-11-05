@@ -2,62 +2,70 @@
 
 The exhaustive catalogue of what `md2star-rs` does and what should reach for
 it. The Python twin, [`md2star`](https://github.com/warith-harchaoui/md2star),
-has its own catalogue; the section on choosing between them is the part that
-matters most here, because the two differ in fidelity, not just in language.
+has its own catalogue; the section on choosing between them says where the two
+still differ.
 
-`md2star-rs` turns **Markdown into DOCX and PPTX, in pure Rust, with no Pandoc
-and no LaTeX**. One reader folds CommonMark + GFM into an AST; two writers emit
-the OOXML. Nothing is shelled out to.
+`md2star-rs` turns **Markdown into DOCX, PPTX and PDF, and DOCX or PPTX back
+into Markdown, in pure Rust**: no Pandoc, no LibreOffice, no LaTeX, nothing
+shelled out. One reader folds CommonMark, GFM and Pandoc's extensions into an
+AST; the writers emit the OOXML themselves, and Typst sets the PDF in memory.
+The core compiles for iOS and Android.
 
-## The two conversions → how to invoke
+## The operations → how to invoke
 
 | Intent | CLI | Library |
 |--------|-----|---------|
-| Markdown → Word | `md2star-rs docx` (or `md2docx`) | `convert_path`, `markdown_to_docx_file`, `markdown_to_docx_bytes` |
-| Markdown → Word, styled after a template | `md2star-rs docx --reference-doc` | `convert_path_with_reference`, `markdown_to_docx_bytes_with_reference` |
-| Markdown → PowerPoint | `md2star-rs pptx` (or `md2pptx`) | `convert_path_to_pptx`, `markdown_to_pptx_file`, `markdown_to_pptx_bytes` |
+| Markdown → Word | `md2star-rs docx` (or `md2docx`) | `convert(…, Format::Docx, …)`, `markdown_to_docx_bytes` |
+| Markdown → Word, styled after a template | `md2star-rs docx --reference-doc` | `Options::reference_doc`, `markdown_to_docx_bytes_with_reference` |
+| Markdown → Word with citations | `md2star-rs docx --bib refs.bib` | `Options::bibliography` |
+| Markdown → PowerPoint | `md2star-rs pptx` (or `md2pptx`) | `convert(…, Format::Pptx, …)` |
+| Markdown → PDF (feature `pdf`) | `md2star-rs pdf` | `convert(…, Format::Pdf, …)` |
+| Word / PowerPoint → Markdown | `md2star-rs twin` | `twin::to_markdown` |
+| Check a deck | `md2star-rs audit` | `audit::audit` |
+| Bundled templates, a template's layouts | `md2star-rs templates` | `templates::bundled`, `pptx::template::inspect` |
 
-The `_bytes` variants never touch the filesystem, which is what makes this
-crate usable from a server or a WASM shell.
+Every library call works in memory, which is what makes the crate usable from
+a server, a phone app or a WASM shell.
 
 ## Natural-language phrasings that should fire
 
 - **DOCX**: "convert this markdown to Word", "markdown to docx", "turn my
-  README into a Word document", "generate a .docx from Markdown", "no Pandoc".
+  README into a Word document", "with a table of contents", "keep my
+  equations as real Word equations", "embed the images".
+- **Citations**: "resolve [@key] against my .bib", "BibTeX to Word",
+  "author-date citations", "IEEE numbered references".
 - **Reference doc**: "use our corporate template", "style it like this docx",
   "inherit the house styles, fonts and page setup", "--reference-doc".
-- **PPTX**: "make a deck from this markdown", "markdown to PowerPoint",
-  "each heading becomes a slide", "generate slides from my notes".
-- **Why Rust**: "a single binary, no Pandoc install", "no LaTeX toolchain",
-  "convert Markdown in a container without 400 MB of dependencies",
-  "docx generation from Rust", "in-memory docx bytes".
+- **PPTX**: "make a deck from this markdown", "markdown to PowerPoint", "use
+  the layouts of this template", "nothing under 24 pt", "speaker notes".
+- **PDF**: "markdown to PDF without LaTeX", "a PDF on a phone", "the same PDF
+  on every machine".
+- **Twin**: "turn this docx back into markdown", "make an editable twin of
+  this deck", "extract the slides' text and notes as markdown".
+- **Audit**: "check this PowerPoint for overlapping text", "lint my deck",
+  "is any text too small", "is this slide readable", "low contrast".
+- **Why Rust**: "a single binary, no Pandoc install", "convert Markdown in an
+  iOS or Android app", "no LibreOffice in the container", "docx generation
+  from Rust", "in-memory docx bytes", "byte-identical output".
 - **The crate itself**: `cargo add md2star-rs`, `cargo install md2star-rs`,
-  `md2star_rs`, `md2star-rs docx`, `md2star-rs pptx`.
-
-## What a deck looks like
-
-`md2pptx` maps each `#` heading to a slide and flattens the body to bullets:
-ordered lists become numbered, nested lists become sub-bullets, and quotes,
-code blocks and tables become bullet lines. It is text-first on purpose.
+  `md2star_rs`, `md2star-rs docx`, `md2star-rs pptx`, `md2star-rs pdf`,
+  `md2star-rs twin`, `md2star-rs audit`.
 
 ## Choosing between the Rust crate and the Python twin
 
-Reach for **`md2star-rs`** when you want a single binary with nothing to
-install — no Pandoc, no LaTeX, no Python — when the calling code is Rust, or
-when you need the document as bytes in memory rather than a file.
+Reach for **`md2star-rs`** when nothing may be installed beside it (no Pandoc,
+no LibreOffice, no Python), when the code runs on a phone or a tablet, when the
+calling code is Rust, when the document is wanted as bytes in memory, or when
+the output must be byte-identical run after run.
 
-Reach for the **Python `md2star`** when fidelity matters more than
-installability. It is the max-fidelity path, and these are the differences, not
-bugs to report here:
+Reach for the **Python `md2star`** for what this crate leaves out on purpose:
 
-- **Citations and bibliography.** `[@key]` against a `.bib` is out of scope: no
-  stable Rust CSL processor exists yet.
-- **Math.** MathML is reachable in Rust; MathML → OMML is not, so equations do
-  not survive into Word here.
-- **Embedded images and hyperlink relations** in DOCX.
-- **PPTX images and shapes** — the deck backend is text-first.
-- **PDF output**, the GUI, the HTTP API, the MCP tool set, and reading a
-  finished document *back* into Markdown.
+- **A full CSL style.** Two styles are built in (Chicago author-date, IEEE
+  numeric); a `.csl` file's name picks one, its content is not read.
+- **A PDF read back into Markdown**, which needs OCR.
+- **Cloning a template's example slides** (`--reference-slides`) and the visual
+  judge that looks at rendered slides.
+- **The GUI, the HTTP API, the MCP tool set.**
 
 ## Three binaries: which one to reach for
 
@@ -70,24 +78,21 @@ break every existing install.
 
 `md2star-rs docx` and `md2star-rs pptx` cannot collide with anything, and they
 delegate to the same library calls, so the output is byte-for-byte identical.
-**Use them in scripts, Dockerfiles and CI** — anywhere being certain which
-implementation ran matters more than typing less. Keep `md2docx` for
-interactive use if you prefer it, and run `which md2docx` when output
-surprises you.
+**Use them in scripts, Dockerfiles and CI**: anywhere being certain which
+implementation ran matters more than typing less.
 
 ## When NOT to use md2star-rs (SKIP)
 
-- Anything needing citations, math, embedded images or PDF → the Python
+- Reading a PDF back into Markdown → the Python `md2star twin`.
+- A citation style that must follow a given `.csl` file exactly → the Python
   `md2star`.
-- Reading a PDF, DOCX or PPTX *back* into Markdown → the Python `md2star`'s
-  twin mode.
 - Extracting plain text from a document.
 - Authoring the Markdown itself. This converts; it does not write.
 - HTML output. Neither implementation targets it.
 
 ## See also
 
-- [`README.md`](README.md) / [`LISEZMOI.md`](LISEZMOI.md): install and the full
-  feature table.
+- [`README.md`](README.md) / [`LISEZMOI.md`](LISEZMOI.md): install, features,
+  what works and the measured comparison.
 - [`EXAMPLES.md`](EXAMPLES.md): runnable recipes.
 - [`CHANGELOG.md`](CHANGELOG.md): what changed, version by version.

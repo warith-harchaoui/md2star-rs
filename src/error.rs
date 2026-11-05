@@ -20,7 +20,7 @@ pub enum Error {
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// `docx-rs` failed to serialize/zip the document.
+    /// The DOCX package could not be written (zipping failed).
     #[error("failed to write DOCX: {0}")]
     Docx(String),
 
@@ -38,10 +38,10 @@ pub enum Error {
     #[error("failed to write PDF: {0}")]
     Pdf(String),
 
-    /// A feature that exists in the Python md2star but has not been ported to Rust yet,
-    /// or that this build was compiled without (a disabled Cargo feature). The message
-    /// says which, and what to do.
-    #[error("not ported yet: {0}")]
+    /// Something md2star-rs does not do (reading a PDF back), or that this build was
+    /// compiled without (a disabled Cargo feature). The message says which, and what
+    /// to do.
+    #[error("not supported: {0}")]
     Unsupported(String),
 
     /// An image or another referenced file could not be loaded.

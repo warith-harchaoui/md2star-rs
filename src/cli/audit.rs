@@ -54,12 +54,12 @@ pub fn run(args: &AuditArgs) -> Result<()> {
         }
     };
     if args.json {
-        println!("{}", report.to_json());
+        out!("{}", report.to_json());
     } else {
         for finding in &report.findings {
-            println!("{finding}");
+            out!("{finding}");
         }
-        println!("{}", report.summary());
+        out!("{}", report.summary());
     }
     let _ = std::io::stdout().flush();
     if report.fails(args.strict) {

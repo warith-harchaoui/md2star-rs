@@ -44,7 +44,7 @@ fn bold_text_becomes_a_bold_run() {
     let bytes = markdown_to_docx_bytes("Some **strong** text").expect("conversion succeeds");
     let xml = document_xml(&bytes);
     assert!(xml.contains("strong"), "bold text missing");
-    // `docx-rs` emits `<w:b />` for a bold run; its presence proves emphasis mapped through.
+    // A bold run carries `<w:b/>`; its presence proves emphasis mapped through.
     assert!(xml.contains("w:b"), "no bold run emitted: {xml}");
 }
 
@@ -221,8 +221,9 @@ fn two_ordered_lists_with_different_starts_do_not_share_a_definition() {
 
 #[test]
 fn no_numbering_id_is_declared_twice() {
-    // `docx-rs` always writes its own `<w:abstractNum w:abstractNumId="1">` and
-    // `<w:num w:numId="1">` ahead of ours. Colliding with either produces a
+    // Until 0.5, `docx-rs` wrote its own `<w:abstractNum w:abstractNumId="1">` and
+    // `<w:num w:numId="1">` ahead of ours (and the bundled template now brings its
+    // own definitions). Colliding with any of them produces a
     // `numbering.xml` with duplicate ids, and Word reads the *first* — which is
     // how every bullet list came out as `1. 2. 3.` before 0.4.3.
     let bytes = markdown_to_docx_bytes("- a\n- b\n\ntext\n\n1. one\n\ntext\n\n4. four\n")
@@ -299,7 +300,7 @@ fn task_list_state_reaches_the_document() {
     let bytes = markdown_to_docx_bytes("- [ ] todo\n- [x] done\n").expect("converts");
     let xml = entry(&bytes, "word/document.xml").expect("has a document part");
     assert!(xml.contains('\u{2610}'), "an unchecked box must be visible");
-    assert!(xml.contains('\u{2611}'), "a checked box must be visible");
+    assert!(xml.contains('\u{2612}'), "a checked box must be visible");
 }
 
 #[test]
@@ -309,7 +310,7 @@ fn checked_and_unchecked_items_are_distinguishable() {
     let bytes = markdown_to_docx_bytes("- [ ] same words\n- [x] same words\n").expect("converts");
     let xml = entry(&bytes, "word/document.xml").expect("has a document part");
     let unchecked = xml.find('\u{2610}').expect("unchecked box present");
-    let checked = xml.find('\u{2611}').expect("checked box present");
+    let checked = xml.find('\u{2612}').expect("checked box present");
     assert_ne!(unchecked, checked);
 }
 
@@ -318,7 +319,7 @@ fn an_ordinary_bullet_gets_no_checkbox() {
     let bytes = markdown_to_docx_bytes("- plain item\n").expect("converts");
     let xml = entry(&bytes, "word/document.xml").expect("has a document part");
     assert!(!xml.contains('\u{2610}'));
-    assert!(!xml.contains('\u{2611}'));
+    assert!(!xml.contains('\u{2612}'));
 }
 
 // --- what the reader drops, and what it keeps -----------------------------
@@ -338,10 +339,14 @@ fn text_inside_raw_html_is_kept() {
 }
 
 #[test]
-fn math_survives_as_literal_text() {
-    // This writer renders no equations, but dropping them would be worse: the
-    // reader at least sees what was written.
+fn math_becomes_a_native_equation() {
+    // Since 0.5 the v0.4 entry point writes OMML too: an equation, with its exponent as
+    // a superscript object, not the LaTeX source as text.
     let bytes = markdown_to_docx_bytes("Inline $E = mc^2$ matters.\n").expect("converts");
     let xml = entry(&bytes, "word/document.xml").expect("has a document part");
-    assert!(xml.contains("mc^2"));
+    assert!(
+        xml.contains("<m:oMath>") && xml.contains("<m:sSup>"),
+        "{xml}"
+    );
+    assert!(!xml.contains("mc^2"));
 }

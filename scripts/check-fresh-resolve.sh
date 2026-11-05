@@ -18,7 +18,7 @@
 # Nothing in the real working tree is touched — the repo's own Cargo.lock is
 # neither read nor rewritten.
 #
-# Usage: scripts/check-fresh-resolve.sh
+# Usage: scripts/check-fresh-resolve.sh [cargo build flags, e.g. --all-features]
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
@@ -39,7 +39,7 @@ rm -f "$work/head.tar"
 rm -f "$work/Cargo.lock"
 
 echo "==> resolving dependencies with no lock (newest versions each range allows)"
-cargo build --manifest-path "$work/Cargo.toml" --all-targets
+cargo build --manifest-path "$work/Cargo.toml" --all-targets "$@"
 
 echo
 echo "==> versions this resolve picked, vs the committed Cargo.lock"

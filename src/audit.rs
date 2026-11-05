@@ -24,14 +24,27 @@
 //!   character model: 0.5 em per character, 1.2 line spacing, 15 % slack), reported
 //!   with the size that would fit — an observation, a failure only with `--strict`.
 //!
+//! - **low-contrast**: a run that states its own colour, under the WCAG ratio against
+//!   what is behind its shape (3:1 for large type, 4.5:1 otherwise); see `contrast.rs`
+//!   for how the backdrop and theme colours are resolved;
+//!
 //! A photo credit (a shape named [`crate::pptx::CREDIT_NAME`]) is small and over its
-//! picture on purpose, and is exempt from the type and overlap checks. md2star's
-//! `low-contrast` check (WCAG ratios against the resolved backdrop) is not ported yet.
+//! picture on purpose, and is exempt from the type and overlap checks; its contrast is
+//! still judged.
 //!
 //! Output: human-readable lines, or JSON with `--json` — the same keys as `md2star
 //! audit --json` (`slide`, `kind`, `detail`, `shape`, and `measured_pt` / `fits_pt` on
 //! an overrun). Exit status: 0 for nothing but observations, 1 on a defect, 2 when the
 //! deck cannot be read.
+
+mod contrast;
+
+pub use contrast::{
+    contrast_ratio, relative_luminance, CONTRAST_LARGE_BOLD_PT, CONTRAST_LARGE_PT,
+    CONTRAST_MIN_LARGE, CONTRAST_MIN_NORMAL,
+};
+
+use contrast::{backdrop_in, backdrops, ColouredRun, Fill, Palette};
 
 use crate::error::{Error, Result};
 use crate::pptx::template::{ph_of, shapes, xfrm_of, Package, Styles};
@@ -79,6 +92,8 @@ pub enum FindingKind {
     Unreadable,
     /// Text below `--min-pt` (`under-min-pt`).
     BelowMinPt,
+    /// Text under the WCAG contrast floor against its backdrop (`low-contrast`).
+    LowContrast,
     /// Text overruns its box (`overrun`): an observation unless `--strict`.
     Overrun,
 }
@@ -92,6 +107,7 @@ impl FindingKind {
             FindingKind::GhostPlaceholder => "ghost-placeholder",
             FindingKind::Unreadable => "illegible-type",
             FindingKind::BelowMinPt => "under-min-pt",
+            FindingKind::LowContrast => "low-contrast",
             FindingKind::Overrun => "overrun",
         }
     }
@@ -178,6 +194,7 @@ impl AuditReport {
             "ghost-placeholder",
             "illegible-type",
             "under-min-pt",
+            "low-contrast",
             "overrun",
         ];
         let breakdown: Vec<String> = order
@@ -277,6 +294,10 @@ struct Seen {
     /// A table: its cells are laid out in a grid, so the character model's overrun
     /// estimate does not apply (md2star's audit does not read tables at all).
     table: bool,
+    /// What the shape paints behind its own text and over what lies under it.
+    fill: Fill,
+    /// The runs that state their own colour.
+    coloured: Vec<ColouredRun>,
 }
 
 fn name_of(shape: &Node) -> String {
@@ -351,7 +372,14 @@ impl Affine {
     }
 }
 
-fn collect(tree: &[&Node], affine: Affine, styles: &Styles, layout: &Node, out: &mut Vec<Seen>) {
+fn collect(
+    tree: &[&Node],
+    affine: Affine,
+    styles: &Styles,
+    layout: &Node,
+    palette: &Palette,
+    out: &mut Vec<Seen>,
+) {
     for shape in tree {
         match shape.local() {
             // An Office-2010 extension (an equation): read the shape the producer
@@ -359,13 +387,13 @@ fn collect(tree: &[&Node], affine: Affine, styles: &Styles, layout: &Node, out: 
             "AlternateContent" => {
                 if let Some(choice) = shape.children.iter().find(|c| c.local() == "Choice") {
                     let kids: Vec<&Node> = choice.children.iter().collect();
-                    collect(&kids, affine, styles, layout, out);
+                    collect(&kids, affine, styles, layout, palette, out);
                 }
             }
             "grpSp" => {
                 let inner = affine.then_group(shape);
                 let kids: Vec<&Node> = shape.children.iter().collect();
-                collect(&kids, inner, styles, layout, out);
+                collect(&kids, inner, styles, layout, palette, out);
             }
             "sp" | "pic" | "graphicFrame" | "cxnSp" => {
                 let ph = ph_of(shape);
@@ -376,6 +404,7 @@ fn collect(tree: &[&Node], affine: Affine, styles: &Styles, layout: &Node, out: 
                     .or_else(|| resolved.as_ref().and_then(|r| r.frame))
                     .map(|b| affine.apply(b));
                 let mut paras = Vec::new();
+                let mut coloured = Vec::new();
                 let mut has_field = false;
                 let list = shape.path(&["txBody", "lstStyle"]);
                 let size_at = |level: usize| -> f32 {
@@ -432,6 +461,20 @@ fn collect(tree: &[&Node], affine: Affine, styles: &Styles, layout: &Node, out: 
                                         .unwrap_or_else(|| size_at(level));
                                     if !t.trim().is_empty() {
                                         sizes.push(sz);
+                                        let rpr = r.child("rPr");
+                                        let own = rpr
+                                            .and_then(|x| x.child("solidFill"))
+                                            .and_then(|f| f.children.first())
+                                            .and_then(|c| palette.colour(c, None));
+                                        if let Some(rgb) = own {
+                                            coloured.push(ColouredRun {
+                                                rgb,
+                                                size_pt: sz,
+                                                bold: rpr.is_some_and(|x| {
+                                                    matches!(x.attr("b"), Some("1" | "true"))
+                                                }),
+                                            });
+                                        }
                                     }
                                     text.push_str(&t);
                                 }
@@ -477,6 +520,8 @@ fn collect(tree: &[&Node], affine: Affine, styles: &Styles, layout: &Node, out: 
                     has_field,
                     text_bearing,
                     table: shape.local() == "graphicFrame",
+                    fill: palette.shape_fill(shape),
+                    coloured,
                 });
             }
             _ => {}
@@ -560,9 +605,26 @@ pub fn audit(pptx: &[u8], options: &AuditOptions) -> Result<AuditReport> {
             .rel_of(&layout_part, "slideMaster")
             .ok_or_else(|| Error::Read(format!("{layout_part} has no master")))?;
         let styles = Styles::for_master(&package, &master_part)?;
+        let master_palette = Palette::for_master(&package, &master_part, &styles.master);
+        let layout_palette = master_palette.overridden(&layout);
+        let slide_palette = layout_palette.overridden(&slide);
+        let behind = Behind {
+            slide_bg: slide_palette.background(&slide),
+            layout_shapes: backdrops(&layout, &layout_palette),
+            layout_bg: layout_palette.background(&layout),
+            master_shapes: backdrops(&styles.master, &master_palette),
+            master_bg: master_palette.background(&styles.master),
+        };
         let mut seen = Vec::new();
-        collect(&shapes(&slide), Affine::ID, &styles, &layout, &mut seen);
-        audit_slide(index, &seen, canvas, options, &mut findings);
+        collect(
+            &shapes(&slide),
+            Affine::ID,
+            &styles,
+            &layout,
+            &slide_palette,
+            &mut seen,
+        );
+        audit_slide(index, &seen, canvas, options, &behind, &mut findings);
     }
     findings.sort_by(|a, b| {
         a.slide
@@ -583,7 +645,8 @@ fn severity(kind: FindingKind) -> u8 {
         FindingKind::GhostPlaceholder => 2,
         FindingKind::Unreadable => 3,
         FindingKind::BelowMinPt => 4,
-        FindingKind::Overrun => 5,
+        FindingKind::LowContrast => 5,
+        FindingKind::Overrun => 6,
     }
 }
 
@@ -598,17 +661,53 @@ fn finding(slide: usize, kind: FindingKind, shape: &str, detail: String) -> Find
     }
 }
 
+/// What lies behind a slide's own shapes, back to front.
+struct Behind {
+    slide_bg: Fill,
+    layout_shapes: Vec<(Box4, Fill)>,
+    layout_bg: Fill,
+    master_shapes: Vec<(Box4, Fill)>,
+    master_bg: Fill,
+}
+
+impl Behind {
+    /// The colour a reader sees behind shape `i` of `seen`, resolved as md2star does:
+    /// its own fill, the shapes under it, the slide's background, the layout's shapes
+    /// and background, the master's. `None` when nothing is there or it is no single
+    /// colour.
+    fn colour_behind(&self, seen: &[Seen], i: usize, bx: Box4) -> Option<contrast::Rgb> {
+        let under: Vec<(Box4, Fill)> = seen[..i]
+            .iter()
+            .filter_map(|s| s.frame.map(|f| (f, s.fill)))
+            .collect();
+        let chain = [
+            Some(seen[i].fill).filter(|f| *f != Fill::None),
+            backdrop_in(&under, bx),
+            Some(self.slide_bg).filter(|f| *f != Fill::None),
+            backdrop_in(&self.layout_shapes, bx),
+            Some(self.layout_bg).filter(|f| *f != Fill::None),
+            backdrop_in(&self.master_shapes, bx),
+            Some(self.master_bg).filter(|f| *f != Fill::None),
+        ];
+        match chain.into_iter().flatten().next()? {
+            Fill::Solid(rgb) => Some(rgb),
+            Fill::None | Fill::Opaque => None,
+        }
+    }
+}
+
 fn audit_slide(
     index: usize,
     seen: &[Seen],
     canvas: (i64, i64),
     options: &AuditOptions,
+    behind: &Behind,
     out: &mut Vec<Finding>,
 ) {
     let (w, h) = canvas;
     let mut texts: Vec<(&Seen, Box4)> = Vec::new();
     let mut pictures: Vec<(&Seen, Box4)> = Vec::new();
-    for s in seen {
+    for (i, s) in seen.iter().enumerate() {
         if let Some(b) = s.frame.filter(|b| b.2 > 0 && b.3 > 0) {
             let (tx, ty) = (w as f64 * BLEED_TOLERANCE, h as f64 * BLEED_TOLERANCE);
             let mut over = Vec::new();
@@ -650,6 +749,25 @@ fn audit_slide(
                 ));
             }
             continue;
+        }
+        if let Some(b) = s.frame.filter(|b| b.2 > 0 && b.3 > 0) {
+            if !s.coloured.is_empty() {
+                if let Some(bg) = behind.colour_behind(seen, i, b) {
+                    if let Some((ratio, floor, rgb)) = contrast::worst(&s.coloured, bg) {
+                        out.push(finding(
+                            index,
+                            FindingKind::LowContrast,
+                            &s.name,
+                            format!(
+                                "#{} on #{} is {ratio:.1}:1, under the {}:1 floor",
+                                contrast::hex(rgb),
+                                contrast::hex(bg),
+                                g(floor as f32)
+                            ),
+                        ));
+                    }
+                }
+            }
         }
         if s.name == crate::pptx::CREDIT_NAME {
             continue;

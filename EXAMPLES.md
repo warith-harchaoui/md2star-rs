@@ -24,9 +24,11 @@ for f in docs/*.md; do md2docx "$f"; done
 
 ## CLI: style the output after a reference document
 
-Pass an existing `.docx` whose look you want to reuse. The output inherits its styles, theme,
-fonts and page setup, and headings/quotes are emitted through its named styles
-(`Heading1`…`Heading6`, `Quote`):
+Pass an existing `.docx` whose look you want to reuse. The output keeps every part of it
+(styles, theme, numbering, headers, footers, page setup) but its body, and each paragraph
+goes through the style Pandoc would use (`Heading1`…, `BlockText`, `SourceCode`), taken
+from the template by id or by name, or added when the template lacks it. Without
+`--reference-doc`, md2star's own `template.docx` is used:
 
 ```bash
 md2docx report.md --reference-doc house-template.docx
@@ -46,9 +48,20 @@ assert_eq!(&bytes[..2], b"PK");
 
 To convert a file on disk directly with a template, use `convert_path_with_reference`.
 
+## CLI: citations, a table of contents, equations
+
+```bash
+md2star-rs docx paper.md --bib refs.bib --toc
+md2star-rs docx paper.md --bib refs.bib --citation-style numeric   # IEEE: [1], [2]
+```
+
+`[@pearl2009, p. 3]` becomes `(Pearl 2009, 3)` in author-date, and the reference list goes
+at the end (or into a `::: {#refs}` div). `$E = mc^2$` and `$$…$$` become native Word
+equations.
+
 ## CLI: Markdown → PowerPoint slides
 
-Each level-1 heading (`#`) starts a slide; the body until the next `#` becomes its bullets:
+`#` and `##` headings (and `---`) start slides; each lands on a layout of the template:
 
 ```bash
 md2pptx talk.md
@@ -57,7 +70,8 @@ md2pptx talk.md -o build/keynote.pptx
 # wrote build/keynote.pptx
 ```
 
-Given this Markdown, `md2pptx` produces a two-slide deck ("Intro" and "Results"):
+Given this Markdown, `md2pptx` produces a two-slide deck ("Intro" and "Results"), each on
+the template's "Title and Content" layout:
 
 ```markdown
 # Intro
@@ -69,6 +83,44 @@ Given this Markdown, `md2pptx` produces a two-slide deck ("Intro" and "Results")
 
 1. faster builds
 2. fewer bugs
+```
+
+Ask for a layout or a role, and keep every word at a readable size:
+
+```markdown
+# Revenue {.bignumber}
+
+**+18 %**
+
+# Simplicity scales. {.statement}
+
+# Agenda {layout="Two Content"}
+```
+
+```bash
+md2star-rs pptx talk.md --min-pt 24 --reference-doc house.pptx
+md2star-rs audit talk.pptx          # what a reader would trip on, exit 1 on a defect
+```
+
+## CLI: PDF, and back to Markdown
+
+```bash
+cargo install md2star-rs --features pdf,mermaid
+md2star-rs pdf report.md            # Typst in memory, fonts embedded, same bytes every run
+md2star-rs twin report.docx         # → report.md + report_media/
+md2star-rs twin talk.pptx --out notes/
+```
+
+## Library: every format through `convert`
+
+```rust
+use md2star_rs::{convert, Format, Options};
+
+let mut options = Options::default();
+options.min_pt = Some(24.0);
+let out = convert("# Slide\n\n- one\n- two", Format::Pptx, &options).unwrap();
+assert_eq!(&out.bytes[..2], b"PK");
+assert!(out.warnings.is_empty());
 ```
 
 ## Library: Markdown → PPTX bytes

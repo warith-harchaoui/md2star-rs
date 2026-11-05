@@ -156,9 +156,12 @@ fn font_dirs() -> Vec<PathBuf> {
         "/System/Library/Fonts/Supplemental",
         "/usr/share/fonts",
         "/usr/local/share/fonts",
-        "C:\\Windows\\Fonts",
     ] {
         dirs.push(PathBuf::from(d));
+    }
+    // Windows keeps its fonts under the system root, wherever it was installed.
+    if let Some(root) = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("WINDIR")) {
+        dirs.push(PathBuf::from(root).join("Fonts"));
     }
     dirs
 }

@@ -1,23 +1,16 @@
-//! Integration tests for the `--reference-doc` feature (Pandoc parity).
+//! The v0.4 entry point `markdown_to_docx_bytes_with_reference` (Pandoc's
+//! `--reference-doc`), now backed by the full DOCX writer.
 //!
-//! Each test builds a *template* `.docx` in memory with `docx-rs` directly — a specific page
-//! size and/or named styles — then converts Markdown against it and cracks open the produced
-//! `.docx` to assert the template's styling came through. Generating the template in-test (no
-//! binary fixture in the repo) keeps every assertion self-contained and readable: the exact
-//! styling being tested sits right next to the assertion.
+//! Each test writes a small reference `.docx` by hand (`docx_common`): a page size and a
+//! few named styles, next to the assertion that depends on them. The fuller contract of
+//! the reference path (every part kept, numbering merged) is in `docx_reference.rs`.
+
+mod docx_common;
 
 use std::io::{Cursor, Read};
 
-use docx_rs::{Docx, Style, StyleType};
-use md2star_rs::{markdown_to_docx_bytes_with_reference, Error};
-
-/// Pack a `docx-rs` [`Docx`] into raw `.docx` bytes — the in-test equivalent of the library's
-/// own packing step, used to synthesize template documents.
-fn pack(docx: Docx) -> Vec<u8> {
-    let mut buffer = Cursor::new(Vec::new());
-    docx.build().pack(&mut buffer).expect("template packs");
-    buffer.into_inner()
-}
+use docx_common::{reference, word_document};
+use md2star_rs::{markdown_to_docx_bytes, markdown_to_docx_bytes_with_reference, Error};
 
 /// Read one named entry out of a packed `.docx` (a zip) as a UTF-8 string.
 fn entry(docx_bytes: &[u8], name: &str) -> Option<String> {
@@ -28,116 +21,93 @@ fn entry(docx_bytes: &[u8], name: &str) -> Option<String> {
     Some(text)
 }
 
-/// Pull `word/document.xml` out of a packed `.docx` byte buffer.
 fn document_xml(docx_bytes: &[u8]) -> String {
     entry(docx_bytes, "word/document.xml").expect("docx contains word/document.xml")
 }
 
-/// A template that declares a paragraph style with the given id (e.g. `"Heading1"`, `"Quote"`).
-///
-/// The style is given a distinctive bold + large size so that, if the writer wrongly emitted
-/// inline formatting instead of referencing the style, the difference would be observable.
-fn template_with_style(style_id: &str) -> Vec<u8> {
-    let style = Style::new(style_id, StyleType::Paragraph)
-        .name(style_id)
-        .bold()
-        .size(48);
-    pack(Docx::new().add_style(style))
+fn styles_xml(docx_bytes: &[u8]) -> String {
+    entry(docx_bytes, "word/styles.xml").expect("docx contains word/styles.xml")
 }
 
 #[test]
 fn reference_template_page_size_is_inherited() {
-    // US-Letter template (12240 x 15840 twips) — deliberately different from docx-rs's default
-    // A4 (11906 x 16838) so inheritance is unambiguous: the output must carry Letter, not A4.
-    let template = pack(Docx::new().page_size(12240, 15840));
+    // US Letter, unlike the A4 of the bundled default: inheritance is unambiguous.
+    let template = word_document(&[], (12240, 15840), "");
     let bytes =
         markdown_to_docx_bytes_with_reference("# Title\n\nBody.", &template).expect("converts");
     let doc = document_xml(&bytes);
-    // The section's page size comes from the template's section_property, which we keep.
     assert!(
         doc.contains("w:w=\"12240\"") && doc.contains("w:h=\"15840\""),
         "output did not inherit the template's page size: {doc}"
     );
-    // And the actual Markdown content is still present.
-    assert!(
-        doc.contains("Title") && doc.contains("Body."),
-        "content missing"
-    );
+    assert!(doc.contains("Body."), "content missing");
 }
 
 #[test]
-fn heading_uses_template_named_style() {
-    // Template defines a Heading1 style → the heading paragraph must *reference* it, not carry
-    // our inline heading size. That reference is the whole point of a reference document.
-    let template = template_with_style("Heading1");
-    let bytes = markdown_to_docx_bytes_with_reference("# Title", &template).expect("converts");
-    let doc = document_xml(&bytes);
+fn heading_uses_the_templates_own_style_definition() {
+    let template = reference(&[("Heading1", "heading 1")]);
+    let bytes =
+        markdown_to_docx_bytes_with_reference("# Title\n\n## Sub", &template).expect("converts");
+    // The first `#` is the title (md2star's rule): use a second level-1 heading.
+    let bytes2 =
+        markdown_to_docx_bytes_with_reference("# Title\n\n# Part", &template).expect("converts");
+    assert!(document_xml(&bytes2).contains("w:val=\"Heading1\""));
+    let styles = styles_xml(&bytes);
+    let heading1 = styles
+        .split("<w:style ")
+        .find(|s| s.contains("w:styleId=\"Heading1\""))
+        .expect("Heading1 kept");
     assert!(
-        doc.contains("w:val=\"Heading1\""),
-        "heading did not use the template's Heading1 style: {doc}"
+        heading1.contains("<w:sz w:val=\"48\"/>"),
+        "the template's Heading1 was replaced: {heading1}"
     );
 }
 
 #[test]
 fn level_six_heading_uses_heading6_style() {
-    // Level 6 is the deepest heading CommonMark emits (`#######` is literal text, not a level-7
-    // heading), and it is also the deepest built-in Word style — so `######` must map to Heading6.
-    // This is the upper end of the `min(MAX_HEADING_STYLE)` clamp exercised through real input.
-    let template = template_with_style("Heading6");
-    let bytes = markdown_to_docx_bytes_with_reference("###### Deep", &template).expect("converts");
-    let doc = document_xml(&bytes);
-    assert!(
-        doc.contains("w:val=\"Heading6\""),
-        "level-6 heading did not use the Heading6 style: {doc}"
-    );
-}
-
-#[test]
-fn heading_without_template_style_falls_back_to_inline() {
-    // Template has NO Heading1 style → we must fall back to inline formatting (a real font
-    // size on the run), never emit a dangling reference to a style the template lacks.
-    let template = pack(Docx::new()); // no styles at all
-    let bytes = markdown_to_docx_bytes_with_reference("# Title", &template).expect("converts");
-    let doc = document_xml(&bytes);
-    assert!(
-        !doc.contains("w:val=\"Heading1\""),
-        "referenced a Heading1 style the template never defined: {doc}"
-    );
-    // Inline fallback carries an explicit run size (`<w:sz .../>`).
-    assert!(
-        doc.contains("w:sz"),
-        "fallback heading lost its inline size: {doc}"
-    );
-}
-
-#[test]
-fn blockquote_uses_quote_style_when_present() {
-    // Template defines a Quote style → a block quote's paragraph is styled with it.
-    let template = template_with_style("Quote");
+    let template = reference(&[("Heading6", "heading 6")]);
     let bytes =
-        markdown_to_docx_bytes_with_reference("> quoted line", &template).expect("converts");
-    let doc = document_xml(&bytes);
-    assert!(
-        doc.contains("w:val=\"Quote\""),
-        "block quote did not use the template's Quote style: {doc}"
-    );
-    assert!(doc.contains("quoted line"), "quote text missing");
+        markdown_to_docx_bytes_with_reference("# T\n\n###### Deep", &template).expect("converts");
+    assert!(document_xml(&bytes).contains("w:val=\"Heading6\""));
 }
 
 #[test]
-fn list_numbering_does_not_collide_with_template() {
-    // A template that already carries a Heading1 style plus (implicitly) its own numbering part
-    // must not clash with the numbering ids we add for the Markdown's ordered list. The output
-    // must still render native numbering (a `numId`) and remain a valid docx.
-    let template = template_with_style("Heading1");
+fn a_style_the_template_lacks_is_added_not_left_dangling() {
+    let template = reference(&[]); // no styles at all
+    let bytes = markdown_to_docx_bytes_with_reference(
+        "# T\n\n# Part\n\n> quoted\n\n```\nx\n```",
+        &template,
+    )
+    .expect("converts");
+    let doc = document_xml(&bytes);
+    let styles = styles_xml(&bytes);
+    for id in ["Heading1", "BlockText", "SourceCode"] {
+        assert!(
+            doc.contains(&format!("w:val=\"{id}\"")),
+            "{id} not used: {doc}"
+        );
+        assert!(
+            styles.contains(&format!("w:styleId=\"{id}\"")),
+            "{id} used but not defined"
+        );
+    }
+}
+
+#[test]
+fn a_style_found_by_name_keeps_the_templates_id() {
+    // Word localises style ids but not the built-in names: "heading 1" under another id.
+    let template = reference(&[("Titre1", "heading 1")]);
+    let bytes =
+        markdown_to_docx_bytes_with_reference("# T\n\n# Partie", &template).expect("converts");
+    assert!(document_xml(&bytes).contains("w:val=\"Titre1\""));
+}
+
+#[test]
+fn ordered_lists_get_native_numbering() {
+    let template = reference(&[("Heading1", "heading 1")]);
     let bytes =
         markdown_to_docx_bytes_with_reference("1. one\n2. two", &template).expect("converts");
-    let doc = document_xml(&bytes);
-    assert!(
-        doc.contains("numId"),
-        "ordered list lost its numbering: {doc}"
-    );
-    // The numbering part must exist and define our decimal format.
+    assert!(document_xml(&bytes).contains("numId"));
     let numbering = entry(&bytes, "word/numbering.xml").expect("numbering.xml present");
     assert!(
         numbering.contains("decimal"),
@@ -146,70 +116,29 @@ fn list_numbering_does_not_collide_with_template() {
 }
 
 #[test]
-fn code_block_uses_source_code_style() {
-    // Template defines Pandoc's "SourceCode" style → each code line references it.
-    let template = template_with_style("SourceCode");
-    let bytes =
-        markdown_to_docx_bytes_with_reference("```\nlet x = 1;\n```", &template).expect("converts");
-    let doc = document_xml(&bytes);
-    assert!(
-        doc.contains("w:val=\"SourceCode\""),
-        "code block did not use the SourceCode style: {doc}"
+fn the_templates_body_is_dropped() {
+    let template = word_document(
+        &[],
+        (11906, 16838),
+        "<w:p><w:r><w:t>TEMPLATE BODY</w:t></w:r></w:p>",
     );
-    assert!(doc.contains("let x = 1;"), "code text missing");
+    let bytes = markdown_to_docx_bytes_with_reference("Mine.", &template).expect("converts");
+    let doc = document_xml(&bytes);
+    assert!(!doc.contains("TEMPLATE BODY") && doc.contains("Mine."));
 }
 
 #[test]
-fn code_block_falls_back_to_html_preformatted() {
-    // No "SourceCode", but Word's built-in "HTMLPreformatted" is present → use it.
-    let template = template_with_style("HTMLPreformatted");
-    let bytes =
-        markdown_to_docx_bytes_with_reference("```\ncode\n```", &template).expect("converts");
-    let doc = document_xml(&bytes);
-    assert!(
-        doc.contains("w:val=\"HTMLPreformatted\""),
-        "code block did not fall back to HTMLPreformatted: {doc}"
-    );
-}
-
-#[test]
-fn code_block_without_a_code_style_stays_monospace() {
-    // Template defines an unrelated style only → the code block references no paragraph style
-    // and keeps our monospace run (the Consolas font).
-    let template = template_with_style("Heading1");
-    let bytes =
-        markdown_to_docx_bytes_with_reference("```\ncode\n```", &template).expect("converts");
-    let doc = document_xml(&bytes);
-    assert!(
-        !doc.contains("w:val=\"SourceCode\"") && !doc.contains("w:val=\"HTMLPreformatted\""),
-        "referenced a code style the template never defined: {doc}"
-    );
-    assert!(
-        doc.contains("Consolas"),
-        "code block lost its monospace font: {doc}"
-    );
-}
-
-#[test]
-fn list_items_use_list_paragraph_style() {
-    // Template defines "ListParagraph" → ordered-list items carry both that style and our
-    // native numbering (the style and the numbering are complementary, not exclusive).
-    let template = template_with_style("ListParagraph");
-    let bytes =
-        markdown_to_docx_bytes_with_reference("1. one\n2. two", &template).expect("converts");
-    let doc = document_xml(&bytes);
-    assert!(
-        doc.contains("w:val=\"ListParagraph\""),
-        "list item did not use the ListParagraph style: {doc}"
-    );
-    assert!(doc.contains("numId"), "list item lost its numbering: {doc}");
+fn without_a_reference_md2stars_template_is_the_default() {
+    let bundled = md2star_rs::templates::DEFAULT_DOCX;
+    let plain = markdown_to_docx_bytes("# T\n\nBody.").expect("converts");
+    let explicit =
+        markdown_to_docx_bytes_with_reference("# T\n\nBody.", bundled).expect("converts");
+    assert_eq!(plain, explicit);
 }
 
 #[test]
 fn reference_conversion_is_idempotent() {
-    // The determinism guarantee holds on the reference path too: same Markdown + same template
-    // → byte-identical output (paragraph/footnote/numbering ids all come from per-doc counters).
-    let template = template_with_style("Heading1");
+    let template = reference(&[("Heading1", "heading 1")]);
     let markdown = "# Title\n\n1. one[^a]\n\n[^a]: note";
     let first = markdown_to_docx_bytes_with_reference(markdown, &template).expect("converts");
     let second = markdown_to_docx_bytes_with_reference(markdown, &template).expect("converts");
@@ -221,8 +150,6 @@ fn reference_conversion_is_idempotent() {
 
 #[test]
 fn invalid_reference_document_is_a_template_error() {
-    // Garbage bytes are not a readable `.docx`; the caller gets a typed Template error (not a
-    // panic, and not misclassified as an I/O error).
     let err = markdown_to_docx_bytes_with_reference("# Title", b"not a docx at all")
         .expect_err("must reject a non-docx template");
     assert!(

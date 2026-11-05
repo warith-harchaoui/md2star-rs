@@ -219,7 +219,9 @@ fn render_diagrams(blocks: &[Block], warnings: &mut Vec<Warning>) -> Vec<Block> 
     blocks
         .iter()
         .map(|b| match b {
-            Block::Mermaid { code, .. } => diagram(code, warnings).unwrap_or_else(|| b.clone()),
+            Block::Mermaid { code, .. } => {
+                crate::mermaid_picture(code, warnings).unwrap_or_else(|| b.clone())
+            }
             Block::Div { attr, content } => Block::Div {
                 attr: attr.clone(),
                 content: render_diagrams(content, warnings),
@@ -227,38 +229,6 @@ fn render_diagrams(blocks: &[Block], warnings: &mut Vec<Warning>) -> Vec<Block> 
             other => other.clone(),
         })
         .collect()
-}
-
-#[cfg(feature = "mermaid")]
-fn diagram(code: &str, warnings: &mut Vec<Warning>) -> Option<Block> {
-    use base64::Engine as _;
-    match crate::mermaid::render_mermaid(code) {
-        Ok(svg) => {
-            let data = base64::engine::general_purpose::STANDARD.encode(svg.svg.as_bytes());
-            Some(Block::Paragraph(vec![Inline::Image(crate::ast::Image {
-                src: format!("data:image/svg+xml;base64,{data}"),
-                alt: vec![Inline::Text("Mermaid diagram".into())],
-                title: None,
-                attr: crate::ast::Attr::default(),
-            })]))
-        }
-        Err(e) => {
-            warnings.push(Warning::new(
-                "mermaid-not-rendered",
-                format!("a Mermaid diagram is shown as its source: {e}"),
-            ));
-            None
-        }
-    }
-}
-
-#[cfg(not(feature = "mermaid"))]
-fn diagram(_code: &str, warnings: &mut Vec<Warning>) -> Option<Block> {
-    warnings.push(Warning::new(
-        "mermaid-not-rendered",
-        "a Mermaid diagram is shown as its source (build with the `mermaid` feature to draw it)",
-    ));
-    None
 }
 
 /// Fold the options that override the front matter into the document.

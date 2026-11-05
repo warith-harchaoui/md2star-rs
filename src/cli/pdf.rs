@@ -14,8 +14,8 @@ pub struct PdfArgs {
     pub common: ConvertArgs,
 }
 
-/// Run `pdf`. Without the `pdf` feature the library answers "not ported yet / not
-/// compiled in", which is printed as is.
+/// Run `pdf`. Without the `pdf` feature the library answers "not supported: … compiled
+/// without the `pdf` feature", which is printed as is.
 ///
 /// # Errors
 ///

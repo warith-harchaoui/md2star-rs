@@ -76,7 +76,7 @@ pub fn run(args: &TwinArgs) -> Result<()> {
     fs::write(&output, &twin.markdown)?;
     report_warnings(&twin.warnings, args.verbosity);
     if !args.verbosity.quiet {
-        println!("wrote {}", output.display());
+        out!("wrote {}", output.display());
     }
     Ok(())
 }

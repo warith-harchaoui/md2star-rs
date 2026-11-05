@@ -3,6 +3,8 @@
 
 #![cfg(feature = "cli")]
 
+mod docx_common;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -34,13 +36,9 @@ fn twin_media_folder_is_named_after_the_document() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/images/pixel-4x3.png"),
     )
     .unwrap();
-    // A Word document with one picture, built with docx-rs (not with our own writer).
-    let docx = docx_rs::Docx::new().add_paragraph(
-        docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_image(docx_rs::Pic::new(&png))),
-    );
-    let mut buf = std::io::Cursor::new(Vec::new());
-    docx.build().pack(&mut buf).unwrap();
-    std::fs::write(dir.path().join("report.docx"), buf.into_inner()).unwrap();
+    // A Word document with one picture, written by hand (not by our own writer).
+    let docx = docx_common::document_with_picture(&png, 4 * 9525, 3 * 9525);
+    std::fs::write(dir.path().join("report.docx"), docx).unwrap();
     let out_dir = dir.path().join("twin");
     let ok = bin()
         .args(["twin", "-q"])
@@ -53,9 +51,7 @@ fn twin_media_folder_is_named_after_the_document() {
     let twin = std::fs::read_to_string(out_dir.join("report.md")).unwrap();
     assert!(twin.starts_with("![](report_media/"), "{twin}");
     let rel = twin.trim().trim_start_matches("![](").trim_end_matches(')');
-    // docx-rs re-encodes the picture: compare what it is, not its bytes.
-    let info = md2star_rs::resources::probe(&std::fs::read(out_dir.join(rel)).unwrap()).unwrap();
-    assert_eq!((info.width_px, info.height_px), (4, 3));
+    assert_eq!(std::fs::read(out_dir.join(rel)).unwrap(), png);
 }
 
 #[test]

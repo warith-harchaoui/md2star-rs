@@ -562,6 +562,36 @@ impl Cx<'_> {
                     }
                 }
                 "br" => pieces.push(Piece::Break),
+                // `a14:m`, inside the `mc:Choice` an equation's shape is written in: the
+                // OMML back to LaTeX (the `mc:Fallback` copy is never read).
+                "m" => {
+                    for m in child.elems() {
+                        let display = m.local() == "oMathPara";
+                        let maths: Vec<&Node> = if display {
+                            m.children_named("oMath").collect()
+                        } else if m.local() == "oMath" {
+                            vec![m]
+                        } else {
+                            Vec::new()
+                        };
+                        for one in maths {
+                            let (tex, unknown) = super::math::to_latex(one);
+                            for u in unknown {
+                                self.warn_once(
+                                    "twin-math-unknown",
+                                    &u,
+                                    format!("equation element `{u}` has no LaTeX equivalent here; its text was kept"),
+                                );
+                            }
+                            text_runs += 1;
+                            pieces.push(Piece::Raw(if display {
+                                format!("$${tex}$$")
+                            } else {
+                                format!("${tex}$")
+                            }));
+                        }
+                    }
+                }
                 _ => {}
             }
         }

@@ -1,26 +1,27 @@
-# md2star-rs — a pure-Rust Markdown → DOCX writer, no Pandoc, no subprocess.
+# md2star-rs — Markdown → DOCX, PPTX and PDF, and Office files back to Markdown, in pure
+# Rust: no Pandoc, no LibreOffice, no subprocess.
 #
-# The Python `md2star` is a thin wrapper around Pandoc; this spin-off keeps the same
-# *goal* (Markdown in, a faithful .docx out) but reaches it with an all-Rust reader →
-# AST → writer pipeline (`pulldown-cmark` → our IR → `docx-rs`). The payoff is a single
-# static binary that runs on every OS/device with no Pandoc install — see README.md for
-# the scope/trade-offs versus the Pandoc-backed original.
+# The Python `md2star` wraps Pandoc; this port keeps its goal (Markdown in, a faithful
+# Office document out) and reaches it in process: `pulldown-cmark` → our AST → our own
+# WordprocessingML and PresentationML writers (and Typst, in memory, for PDF). The payoff
+# is a library that compiles for iOS and Android and a single static binary — see
+# README.md for what is ported and what is not.
 [package]
 name = "md2star-rs"
-version = "0.4.4"
+version = "0.5.0"
 edition = "2021"
 # Verified, not guessed: `cargo test --all` passes on a real 1.88.0 toolchain and fails on
 # 1.85.0. The floor comes from the dependency tree (image, time, zip), not from this
 # crate's own code; the 1.74 declared until 0.4.3 had quietly stopped being true.
 rust-version = "1.88"
 license = "Apache-2.0"
-description = "Pure-Rust Markdown → DOCX and PPTX writer (pulldown-cmark → AST → docx-rs / a template-driven PresentationML writer). A Pandoc-free spin-off of md2star."
+description = "Markdown → DOCX, PPTX and PDF, and DOCX/PPTX back to Markdown, in pure Rust: no Pandoc, no LibreOffice, no subprocess. Citations, native equations, template-driven slide layouts, a deck audit. The cross-device port of md2star."
 repository = "https://github.com/warith-harchaoui/md2star-rs"
 homepage = "https://deraison.ai/ai-helpers"
 documentation = "https://docs.rs/md2star-rs"
 authors = ["Warith HARCHAOUI <warithmetics@deraison.ai>"]
 readme = "README.md"
-keywords = ["markdown", "docx", "pptx", "powerpoint", "pandoc-free"]
+keywords = ["markdown", "docx", "pptx", "pdf", "pandoc-free"]
 categories = ["command-line-utilities", "text-processing"]
 
 # The library is the reusable core (also the future WASM entry point); the two binaries are
@@ -71,9 +72,6 @@ llm = ["net", "dep:serde_json"]
 # CommonMark + GFM reader. We drive it in *event* mode and fold the flat event stream into
 # our own block/inline AST, exactly the reader/writer seam Pandoc uses internally.
 pulldown-cmark = { version = "0.13", default-features = false }
-# The OOXML writer. Unlike Pandoc we own `styles.xml`, so nothing gets stripped after the
-# fact — this is what makes the original md2star's `postprocess.py` zip-surgery unnecessary.
-docx-rs = "0.4"
 # Typed error enums for the library surface — no stringly-typed errors leaking to callers.
 thiserror = "2"
 # Argument parsing for the binaries (derive keeps the CLI declaration close to the struct
@@ -93,7 +91,6 @@ imagesize = "0.15"
 # `data:` URIs embed images as base64.
 base64 = "0.22"
 # Reading OOXML back (twin, audit, PPTX templates): one streaming XML reader for all three.
-# 0.41 because docx-rs already pulls it in: one copy in the tree, not two.
 quick-xml = "0.41"
 # HTTP for remote images (feature `net`), with bounded timeouts. rustls, no OpenSSL.
 ureq = { version = "3", optional = true }

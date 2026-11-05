@@ -556,6 +556,8 @@ enum Para {
         list: String,
     },
     Caption(String),
+    /// An empty paragraph after code: it separates two code blocks, and says nothing.
+    Break,
     /// A lone picture: (alt, src).
     Figure(String, String),
     Table(Vec<Vec<String>>, Vec<Align>),
@@ -687,6 +689,9 @@ impl Cx<'_> {
         if trimmed.is_empty() {
             if ppr.is_some_and(|x| x.path(&["pBdr", "bottom"]).is_some()) || has_hr(p) {
                 out.push(Para::Rule);
+            } else if matches!(out.last(), Some(Para::Code(_))) {
+                // An empty paragraph ends a code block: what follows is another one.
+                out.push(Para::Break);
             }
             return;
         }
@@ -1267,6 +1272,7 @@ fn assemble(paras: Vec<Para>) -> Vec<String> {
                 out.push("---".into());
                 i += 1;
             }
+            Para::Break => i += 1,
             Para::Code(_) => {
                 let mut lines = Vec::new();
                 while let Some(Para::Code(l)) = paras.get(i) {

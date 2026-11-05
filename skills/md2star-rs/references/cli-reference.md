@@ -61,7 +61,11 @@ then a summary: `layout audit: clean (12 slides)` or `layout audit: 3 findings o
 2 slides (1 overlap, 2 under-min-pt)`. Kinds, as in `md2star audit`: `off-slide`,
 `overlap` (text on text, or a picture over text), `ghost-placeholder`,
 `illegible-type` (under 12 pt), `under-min-pt` (with `--min-pt N`; footer chrome
-exempt), `overrun` (an observation; a failure with `--strict`). `--json` prints
+exempt), `low-contrast` (a run that states its own colour, under the WCAG ratio
+against the fill, shapes and backgrounds behind it: 3:1 for type of 18 pt, or 14 pt
+bold, 4.5:1 otherwise; theme colours resolved through the master's colour map; a
+picture or a gradient behind the text leaves it unjudged), `overrun` (an
+observation; a failure with `--strict`). `--json` prints
 the findings as an array of `{slide, kind, detail, shape[, measured_pt,
 fits_pt]}`. Exit `0` when nothing but observations were found, `1` on a defect,
 `2` when the deck cannot be read.
@@ -74,7 +78,9 @@ with the role md2star-rs reads in each and every placeholder's box and size.
 
 ## `docx`
 
-What `md2star docx` (Pandoc underneath) does, in process:
+What `md2star docx` (Pandoc underneath) does, in process. Without
+`--reference-doc`, md2star's own `template.docx` (compiled into the binary) styles
+the document, as it does for `md2star docx`.
 
 - **Title block** from the front matter (`title`, `subtitle`, `author`, `date`,
   `abstract`) in the `Title`, `Subtitle`, `Author`, `Date`, `Abstract` styles,
@@ -99,13 +105,16 @@ What `md2star docx` (Pandoc underneath) does, in process:
 - **Links** are real hyperlinks; `#id` links jump to headings, figures, tables.
 - `---` is a page break (md2star's rule); footnotes and `^[inline notes]` are
   Word footnotes; tables keep their column alignment and caption.
+- **Mermaid** blocks become centred pictures (SVG with its PNG fallback) with the
+  `mermaid` feature; without it they stay code blocks with a warning. The same
+  holds in decks and PDFs.
 
-## Not ported yet — and how that shows
+## What a build cannot do — and how that shows
 
-The full port of md2star is in progress. A flag that is accepted but not
-honoured yet produces a warning on stderr naming it; the conversion still runs.
-A subcommand that is not ported yet exits non-zero with `not ported yet: …`.
-Nothing is ignored silently.
+A reference document given to `pdf` produces a warning on stderr (the PDF has
+its own typography); the conversion still runs. A format this build was
+compiled without (`pdf` without the feature) exits `1` with `not supported: …`
+naming the missing feature.
 
 Pandoc pass-through flags, `--skip-phase`, `--lint` and
 `--no-remote-templates` do not apply to an in-process converter with no Pandoc

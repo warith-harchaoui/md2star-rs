@@ -292,3 +292,149 @@ fn the_cli_speaks_md2stars_json_and_exit_codes() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
+
+// ── low-contrast (md2star's `TestContrast`, plus theme colours) ─────────────────
+
+fn panel(id: u32, frame: (i64, i64, i64, i64), fill: &str) -> String {
+    format!(
+        "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"Panel {id}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x=\"{}\" y=\"{}\"/><a:ext cx=\"{}\" cy=\"{}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:solidFill>{fill}</a:solidFill></p:spPr></p:sp>",
+        frame.0, frame.1, frame.2, frame.3
+    )
+}
+
+fn coloured_box(sz: u32, colour: &str) -> String {
+    format!(
+        "<p:sp><p:nvSpPr><p:cNvPr id=\"61\" name=\"Readable\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x=\"914400\" y=\"914400\"/><a:ext cx=\"4572000\" cy=\"1371600\"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang=\"en-US\" sz=\"{sz}\"><a:solidFill>{colour}</a:solidFill></a:rPr><a:t>Readable?</a:t></a:r></a:p></p:txBody></p:sp>"
+    )
+}
+
+fn srgb(hex: &str) -> String {
+    format!("<a:srgbClr val=\"{hex}\"/>")
+}
+
+/// A one-slide deck, a panel (on the slide, or on its layout) behind a coloured run.
+fn contrast_deck(text: &str, panel_fill: Option<&str>, pt: u32, on_layout: bool) -> Vec<u8> {
+    let clean = convert("# One\n\n- a\n", Format::Pptx, &Options::default())
+        .unwrap()
+        .bytes;
+    let frame = (0, 0, 8_229_600, 5_486_400);
+    let rels = pptx_common::Deck::open(&clean)
+        .part("ppt/slides/_rels/slide1.xml.rels")
+        .unwrap();
+    let layout = rels
+        .split("slideLayouts/")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .map(|f| format!("ppt/slideLayouts/{f}"))
+        .unwrap();
+    let mut deck = clean;
+    if let (Some(fill), true) = (panel_fill, on_layout) {
+        let p = panel(60, frame, fill);
+        deck = patch(&deck, &layout, |xml| {
+            xml.replacen("</p:spTree>", &format!("{p}</p:spTree>"), 1)
+        });
+    }
+    let under = match (panel_fill, on_layout) {
+        (Some(fill), false) => panel(60, frame, fill),
+        _ => String::new(),
+    };
+    let tb = coloured_box(pt * 100, text);
+    patch(&deck, "ppt/slides/slide1.xml", |xml| {
+        xml.replacen("</p:spTree>", &format!("{under}{tb}</p:spTree>"), 1)
+    })
+}
+
+fn contrast_findings(deck: &[u8]) -> Vec<md2star_rs::audit::Finding> {
+    audit(deck, &AuditOptions::default())
+        .unwrap()
+        .findings
+        .into_iter()
+        .filter(|f| f.kind == FindingKind::LowContrast)
+        .collect()
+}
+
+#[test]
+fn pale_grey_on_near_white_is_flagged() {
+    let found = contrast_findings(&contrast_deck(
+        &srgb("C8C8C8"),
+        Some(&srgb("F2F2F2")),
+        28,
+        false,
+    ));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind.as_str(), "low-contrast");
+    assert_eq!(found[0].shape, "Readable");
+    assert_eq!(
+        found[0].detail,
+        "#C8C8C8 on #F2F2F2 is 1.5:1, under the 3:1 floor"
+    );
+    assert!(audit(
+        &contrast_deck(&srgb("C8C8C8"), Some(&srgb("F2F2F2")), 28, false),
+        &AuditOptions::default()
+    )
+    .unwrap()
+    .fails(false));
+}
+
+#[test]
+fn black_on_white_is_not() {
+    let found = contrast_findings(&contrast_deck(
+        &srgb("000000"),
+        Some(&srgb("FFFFFF")),
+        28,
+        false,
+    ));
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn the_panel_a_heading_sits_on_counts_even_from_the_layout() {
+    let dark = srgb("141416");
+    assert_eq!(
+        contrast_findings(&contrast_deck(&srgb("000000"), Some(&dark), 28, true)).len(),
+        1
+    );
+    assert!(contrast_findings(&contrast_deck(&srgb("FFFFFF"), Some(&dark), 28, true)).is_empty());
+}
+
+#[test]
+fn small_type_is_held_to_the_stricter_floor() {
+    // 3.0:1 passes the large-type floor and fails the body-copy one.
+    let (pale, white) = (srgb("949494"), srgb("FFFFFF"));
+    assert!(contrast_findings(&contrast_deck(&pale, Some(&white), 28, false)).is_empty());
+    let small = contrast_findings(&contrast_deck(&pale, Some(&white), 12, false));
+    assert_eq!(small.len(), 1);
+    assert!(
+        small[0].detail.ends_with("under the 4.5:1 floor"),
+        "{}",
+        small[0].detail
+    );
+}
+
+#[test]
+fn a_backdrop_nobody_can_read_is_left_unjudged() {
+    // A gradient panel behind white text: no single colour, so no finding.
+    let gradient = "<p:sp><p:nvSpPr><p:cNvPr id=\"60\" name=\"Gradient\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"8229600\" cy=\"5486400\"/></a:xfrm><a:gradFill><a:gsLst><a:gs pos=\"0\"><a:srgbClr val=\"FFFFFF\"/></a:gs><a:gs pos=\"100000\"><a:srgbClr val=\"FAFAFA\"/></a:gs></a:gsLst></a:gradFill></p:spPr></p:sp>";
+    let clean = contrast_deck(&srgb("FAFAFA"), None, 28, false);
+    let deck = patch(&clean, "ppt/slides/slide1.xml", |xml| {
+        xml.replacen(
+            "<p:sp><p:nvSpPr><p:cNvPr id=\"61\"",
+            &format!("{gradient}<p:sp><p:nvSpPr><p:cNvPr id=\"61\""),
+            1,
+        )
+    });
+    assert!(contrast_findings(&deck).is_empty());
+}
+
+#[test]
+fn theme_colours_are_resolved_through_the_colour_map() {
+    // Beyond md2star (python-pptx reads RGB only): `bg1` text on a `bg1` panel is the
+    // same colour twice, whatever the theme says it is.
+    let bg1 = "<a:schemeClr val=\"bg1\"/>";
+    let found = contrast_findings(&contrast_deck(bg1, Some(bg1), 28, false));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].detail.contains(" is 1.0:1"), "{}", found[0].detail);
+    // `tx1` on `bg1` is the theme's own text on its own background: readable.
+    let tx1 = "<a:schemeClr val=\"tx1\"/>";
+    assert!(contrast_findings(&contrast_deck(tx1, Some(bg1), 28, false)).is_empty());
+}

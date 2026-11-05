@@ -8,10 +8,9 @@
 //! keeps the LaTeX as text), heading *depth* for decks (a deck has slides, not levels),
 //! footnote labels (Word renumbers them).
 
-use std::io::Cursor;
-use std::path::PathBuf;
+mod docx_common;
 
-use docx_rs::{Docx, Style, StyleType};
+use std::path::PathBuf;
 
 use md2star_rs::ast::{plain_text, Block, Inline};
 use md2star_rs::twin::{self, SourceKind, TwinOptions};
@@ -176,20 +175,13 @@ fn assert_same(original: &str, twin: &str, deck: bool) {
 /// writer emits headings, quotes and code through them (built in memory: the twin must
 /// not depend on one particular template file).
 fn template() -> Vec<u8> {
-    let mut docx = Docx::new();
-    for id in ["Heading1", "Heading2", "Heading3", "Quote", "SourceCode"] {
-        let name = match id {
-            "Heading1" => "heading 1",
-            "Heading2" => "heading 2",
-            "Heading3" => "heading 3",
-            "SourceCode" => "Source Code",
-            other => other,
-        };
-        docx = docx.add_style(Style::new(id, StyleType::Paragraph).name(name));
-    }
-    let mut buffer = Cursor::new(Vec::new());
-    docx.build().pack(&mut buffer).expect("template packs");
-    buffer.into_inner()
+    docx_common::reference(&[
+        ("Heading1", "heading 1"),
+        ("Heading2", "heading 2"),
+        ("Heading3", "heading 3"),
+        ("Quote", "Quote"),
+        ("SourceCode", "Source Code"),
+    ])
 }
 
 fn docx_options() -> Options {
@@ -239,6 +231,10 @@ A paragraph with **bold**, *italic*, `code`, ~~struck~~, H~2~O and 2^10^, plus a
 fn main() {
     println!(\"hi\");
 }
+```
+
+```
+second_block()
 ```
 
 Text with $x^2$ inline and an escaped \\*star\\* and snake_case.
@@ -306,7 +302,7 @@ fn python_reference_pptx_round_trips_to_its_source() {
 
 #[test]
 fn docx_round_trip_with_the_default_styles() {
-    // No reference document: the writer's own styles carry the structure.
+    // No reference document: md2star's bundled template carries the structure.
     let mut options = Options::default();
     options.base_dir = Some(fixtures());
     let out = md2star_rs::convert(DOCX_SAMPLE, Format::Docx, &options).unwrap();

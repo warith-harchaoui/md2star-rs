@@ -41,8 +41,8 @@ fn media(parts: &BTreeMap<String, Vec<u8>>) -> Vec<&String> {
         .collect()
 }
 
-/// A4 with one-inch margins: the default text column.
-const TEXT_WIDTH_EMU: u64 = (11906 - 2 * 1440) * 635;
+/// md2star's bundled template (the default): A4, half-inch margins.
+const TEXT_WIDTH_EMU: u64 = (11900 - 2 * 720) * 635;
 
 #[test]
 fn a_png_is_embedded_at_its_size_with_its_alt_text() {
@@ -182,7 +182,7 @@ fn a_large_image_is_scaled_down_to_the_column() {
 fn an_image_in_a_table_fits_its_column() {
     let out = docx("| a | b |\n|---|---|\n| ![x](pixel-4x3.png){width=40in} | y |\n");
     let xml = text(&parts(&out.bytes), "word/document.xml");
-    let col = (11906 - 2 * 1440) / 2 * 635;
+    let col = (11900 - 2 * 720) / 2 * 635;
     assert!(xml.contains(&format!("<wp:extent cx=\"{col}\"")), "{xml}");
 }
 
@@ -203,4 +203,31 @@ fn what_cannot_be_embedded_is_a_warning_and_its_alt_text() {
         .warnings
         .iter()
         .any(|w| w.code == "image-not-embedded" && w.message.contains("WebP")));
+}
+
+#[test]
+fn a_mermaid_diagram_is_a_picture_with_the_feature_and_source_without() {
+    let out = docx("```mermaid\nflowchart LR\n  A --> B\n```\n");
+    let p = parts(&out.bytes);
+    let xml = text(&p, "word/document.xml");
+    let warned = out
+        .warnings
+        .iter()
+        .any(|w| w.code == "mermaid-not-rendered");
+    if cfg!(feature = "mermaid") {
+        assert!(!warned, "{:?}", out.warnings);
+        assert!(xml.contains("<w:pStyle w:val=\"Figure\"/>"), "{xml}");
+        assert!(xml.contains("descr=\"Mermaid diagram\""), "{xml}");
+        assert!(!xml.contains("A --&gt; B"), "the source is gone");
+        // The SVG and, with `svg`, the PNG Word shows in its place.
+        assert!(
+            media(&p).iter().any(|m| m.ends_with(".svg")),
+            "{:?}",
+            media(&p)
+        );
+        assert!(!xml.contains("<w:pStyle w:val=\"SourceCode\"/>"));
+    } else {
+        assert!(warned);
+        assert!(xml.contains("A --&gt; B"), "the source stays readable");
+    }
 }

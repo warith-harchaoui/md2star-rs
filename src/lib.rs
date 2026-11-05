@@ -23,7 +23,8 @@
 //! | [`pptx`] (+ `layout`, `template`, `images`), [`audit`], [`templates`], `llm`, `cli/{pptx,audit,templates}.rs` | PowerPoint output, deck audit | PPTX port |
 //! | [`twin`] (+ `docx`, `pptx`), `pdf`, `cli/{twin,pdf}.rs` | Office → Markdown, PDF output | twin + PDF port |
 //!
-//! Every function that is not ported yet returns [`Error::Unsupported`], never panics.
+//! What a build cannot do (PDF without the `pdf` feature, a PDF read back) returns
+//! [`Error::Unsupported`] saying why, never a panic.
 //!
 //! # Cargo features
 //!
@@ -74,10 +75,42 @@ pub use ast::Document;
 pub use error::{Error, Result};
 pub use options::{Format, Options, Rendered};
 
-/// The DOCX writer's v0.4 name, kept so existing callers still compile.
-#[deprecated(since = "0.5.0", note = "the DOCX writer moved to `md2star_rs::docx`")]
-pub mod writer {
-    pub use crate::docx::{build, build_with_reference};
+/// A Mermaid diagram as a paragraph holding its picture (an SVG `data:` URI), shared by
+/// the DOCX and PPTX writers. `None`, with a `mermaid-not-rendered` warning, when the
+/// `mermaid` feature is off or the diagram does not parse: the caller keeps the source.
+#[cfg(feature = "mermaid")]
+pub(crate) fn mermaid_picture(code: &str, warnings: &mut Vec<ast::Warning>) -> Option<ast::Block> {
+    use base64::Engine as _;
+    match mermaid::render_mermaid(code) {
+        Ok(svg) => {
+            let data = base64::engine::general_purpose::STANDARD.encode(svg.svg.as_bytes());
+            Some(ast::Block::Paragraph(vec![ast::Inline::Image(
+                ast::Image {
+                    src: format!("data:image/svg+xml;base64,{data}"),
+                    alt: vec![ast::Inline::Text("Mermaid diagram".into())],
+                    title: None,
+                    attr: ast::Attr::default(),
+                },
+            )]))
+        }
+        Err(e) => {
+            warnings.push(ast::Warning::new(
+                "mermaid-not-rendered",
+                format!("a Mermaid diagram is shown as its source: {e}"),
+            ));
+            None
+        }
+    }
+}
+
+/// See the `mermaid` variant: without the feature, every diagram stays as its source.
+#[cfg(not(feature = "mermaid"))]
+pub(crate) fn mermaid_picture(_code: &str, warnings: &mut Vec<ast::Warning>) -> Option<ast::Block> {
+    warnings.push(ast::Warning::new(
+        "mermaid-not-rendered",
+        "a Mermaid diagram is shown as its source (build with the `mermaid` feature to draw it)",
+    ));
+    None
 }
 
 /// Convert Markdown to `format`, in memory.
@@ -118,14 +151,14 @@ pub fn render(doc: &Document, format: Format, options: &Options) -> Result<Rende
 /// assert_eq!(&bytes[..2], b"PK");
 /// ```
 pub fn markdown_to_docx_bytes(markdown: &str) -> Result<Vec<u8>> {
-    docx::pack(docx::build(&reader::parse(markdown)))
+    convert(markdown, Format::Docx, &Options::default()).map(|r| r.bytes)
 }
 
 /// Convert Markdown to `.docx` bytes, inheriting styling from a reference `template` `.docx`.
 ///
-/// The template's styles, theme, fonts and page setup are kept, its body content is
-/// dropped, and headings / block quotes / code / list items are emitted through the
-/// template's named styles when present.
+/// Every part of the template is kept (styles, theme, numbering, headers and footers,
+/// page setup) and its body dropped; every style the document uses is taken from the
+/// template by id or by name, or added to it when it lacks one.
 ///
 /// # Errors
 ///
@@ -135,11 +168,11 @@ pub fn markdown_to_docx_bytes_with_reference(
     markdown: &str,
     template_docx: &[u8],
 ) -> Result<Vec<u8>> {
-    let template = docx_rs::read_docx(template_docx).map_err(|e| Error::Template(e.to_string()))?;
-    docx::pack(docx::build_with_reference(
-        &reader::parse(markdown),
-        template,
-    ))
+    let options = Options {
+        reference_doc: Some(template_docx.to_vec()),
+        ..Options::default()
+    };
+    convert(markdown, Format::Docx, &options).map(|r| r.bytes)
 }
 
 /// Convert a Markdown string and write the resulting `.docx` to `output`.

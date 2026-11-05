@@ -202,34 +202,6 @@ pub(super) struct Base {
 const DEFAULT_SECT_PR: &str = r#"<w:sectPr><w:footnotePr><w:numRestart w:val="eachSect"/></w:footnotePr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/><w:cols w:space="708"/><w:docGrid w:linePitch="360"/></w:sectPr>"#;
 
 impl Base {
-    /// Our own package: no reference document.
-    pub(super) fn default_base(lang: Option<&str>) -> Self {
-        let mut parts = BTreeMap::new();
-        parts.insert(
-            "word/settings.xml".to_string(),
-            DEFAULT_SETTINGS.as_bytes().to_vec(),
-        );
-        let mut ct_overrides = BTreeMap::new();
-        ct_overrides.insert("/word/settings.xml".to_string(), CT_SETTINGS.to_string());
-        Base {
-            parts,
-            styles: styles::default_styles(lang),
-            numbering: None,
-            sect_pr: DEFAULT_SECT_PR.to_string(),
-            doc_rels: vec![Rel {
-                id: "rId1".into(),
-                kind: rel_type::SETTINGS.into(),
-                target: "settings.xml".into(),
-                external: false,
-            }],
-            root_rels: Vec::new(),
-            ct_defaults: BTreeMap::new(),
-            ct_overrides,
-            separator_ids: (-1, 0),
-            page: page_of(DEFAULT_SECT_PR),
-        }
-    }
-
     /// Start from a reference `.docx`.
     ///
     /// # Errors
@@ -678,9 +650,6 @@ pub(super) fn core_properties(
     s
 }
 
-const DEFAULT_SETTINGS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:zoom w:percent="100"/><w:defaultTabStop w:val="720"/><w:characterSpacingControl w:val="doNotCompress"/><w:footnotePr><w:footnote w:id="-1"/><w:footnote w:id="0"/></w:footnotePr><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat><m:mathPr><m:mathFont m:val="Cambria Math"/><m:dispDef/><m:defJc m:val="centerGroup"/></m:mathPr></w:settings>"#;
-
 const DEFAULT_APP: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>md2star-rs</Application><DocSecurity>0</DocSecurity></Properties>"#;
 
@@ -752,7 +721,12 @@ mod tests {
 
     #[test]
     fn settings_footnote_separators() {
-        assert_eq!(separator_ids(DEFAULT_SETTINGS), (-1, 0));
+        assert_eq!(
+            separator_ids(
+                "<w:footnotePr><w:footnote w:id=\"-1\"/><w:footnote w:id=\"0\"/></w:footnotePr>"
+            ),
+            (-1, 0)
+        );
         assert_eq!(
             separator_ids(
                 "<w:footnotePr><w:footnote w:id=\"0\"/><w:footnote w:id=\"1\"/></w:footnotePr>"

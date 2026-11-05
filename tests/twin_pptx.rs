@@ -310,6 +310,20 @@ fn round_trip_through_md2star_rs_pptx() {
 }
 
 #[test]
+fn equations_in_a_slide_come_back_as_latex() {
+    // The writer puts an equation's shape inside `mc:AlternateContent`: OMML under
+    // `a14:m` in the `mc:Choice`, the LaTeX in italics in the `mc:Fallback`. The twin
+    // reads the Choice, once, and gives the LaTeX back.
+    let source = "# Physics\n\n- Energy $E = mc^2$ here\n- A ratio $\\frac{a}{b}$\n";
+    let out = md2star_rs::convert(source, md2star_rs::Format::Pptx, &Default::default()).unwrap();
+    let md = twin_md(&out.bytes);
+    assert_eq!(
+        md, "# Physics\n\n- Energy $E=mc^2$ here\n- A ratio $\\frac{a}{b}$\n",
+        "{md}"
+    );
+}
+
+#[test]
 fn non_decks_are_read_errors() {
     assert!(matches!(
         twin::to_markdown(

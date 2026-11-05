@@ -42,20 +42,16 @@
 //! # Files this module owns
 //!
 //! `src/docx/` (this writer, `math.rs`, `citations.rs`, `images.rs`, `package.rs`,
-//! `styles.rs`, `xml.rs`, and `legacy.rs` — the v0.4 `docx-rs` writer behind
-//! [`build`] / [`build_with_reference`]), the whole of `src/bib/`, `src/cli/docx.rs`,
+//! `styles.rs`, `xml.rs`), the whole of `src/bib/`, `src/cli/docx.rs`,
 //! and the `tests/docx_*.rs` integration tests. [`math::latex_to_omml`] is also the
 //! LaTeX → OMML converter the PPTX writer calls.
 
 pub mod citations;
 mod images;
-mod legacy;
 pub mod math;
 mod package;
 mod styles;
 mod xml;
-
-pub use legacy::{build, build_with_reference, pack};
 
 use std::collections::{HashMap, HashSet};
 
@@ -91,7 +87,9 @@ pub fn render(doc: &Document, options: &Options) -> Result<Rendered> {
     let lang = options.lang.clone().or_else(|| doc.meta.lang.clone());
     let base = match &options.reference_doc {
         Some(bytes) => Base::from_reference(bytes, lang.as_deref())?,
-        None => Base::default_base(lang.as_deref()),
+        // No reference: md2star's own `template.docx`, compiled in, as `md2star docx`
+        // uses it by default.
+        None => Base::from_reference(crate::templates::DEFAULT_DOCX, lang.as_deref())?,
     };
     let mut writer = Writer::new(&base, options, &doc, lang.clone());
     writer.document(&doc);
@@ -101,6 +99,47 @@ pub fn render(doc: &Document, options: &Options) -> Result<Rendered> {
         bytes: package::pack(base, output)?,
         warnings,
     })
+}
+
+/// Write `blocks` (a body with no front matter) to `.docx` bytes with the default
+/// options: md2star's bundled template, no bibliography.
+///
+/// # Errors
+///
+/// See [`render`].
+///
+/// # Examples
+///
+/// ```
+/// use md2star_rs::{docx, reader};
+/// let bytes = docx::build(&reader::parse("# Title\n\nBody.")).unwrap();
+/// assert_eq!(&bytes[..2], b"PK");
+/// ```
+pub fn build(blocks: &[Block]) -> Result<Vec<u8>> {
+    render(&body_only(blocks), &Options::default()).map(|r| r.bytes)
+}
+
+/// Write `blocks` to `.docx` bytes styled by the reference document `reference` (the
+/// bytes of a `.docx` or `.dotx`): its styles, theme, numbering, headers, footers and
+/// page setup are kept, its body dropped.
+///
+/// # Errors
+///
+/// [`crate::Error::Template`] when `reference` is not a readable Word document.
+pub fn build_with_reference(blocks: &[Block], reference: &[u8]) -> Result<Vec<u8>> {
+    let options = Options {
+        reference_doc: Some(reference.to_vec()),
+        ..Options::default()
+    };
+    render(&body_only(blocks), &options).map(|r| r.bytes)
+}
+
+fn body_only(blocks: &[Block]) -> Document {
+    Document {
+        meta: crate::ast::Metadata::default(),
+        blocks: blocks.to_vec(),
+        warnings: Vec::new(),
+    }
 }
 
 /// Character formatting in effect.
@@ -142,6 +181,9 @@ struct Writer<'a> {
     decimal_abstract: usize,
     /// The next body paragraph opens a section (after a heading): `FirstParagraph`.
     first_para: bool,
+    /// The previous block was a code block (two in a row get an empty paragraph
+    /// between them, so a reader does not take them for one).
+    after_code: bool,
     /// A paragraph style imposed by the context (quote, list, footnote, div).
     para_style: Option<String>,
     /// Content placed at the start of the next paragraph (a footnote's number).
@@ -186,6 +228,7 @@ impl<'a> Writer<'a> {
             bullet_num: 0,
             decimal_abstract: 0,
             first_para: true,
+            after_code: false,
             para_style: None,
             para_prefix: String::new(),
             box_width: base.page.text_width * EMU_PER_TWIP,
@@ -426,6 +469,7 @@ impl<'a> Writer<'a> {
     }
 
     fn block(&mut self, block: &Block, depth: usize) {
+        let after_code = std::mem::take(&mut self.after_code);
         match block {
             Block::Heading {
                 level,
@@ -451,14 +495,32 @@ impl<'a> Writer<'a> {
                 self.push_p(&style, "", &content);
             }
             Block::Figure(image) => self.figure(image),
-            Block::CodeBlock { code, attr, .. } => self.code_block(code, attr),
-            Block::Mermaid { code, attr } => {
-                self.warn(
-                    "mermaid-not-rendered",
-                    "a Mermaid diagram is kept as its source code: md2star-rs has no Mermaid \
-                     renderer yet",
-                );
+            Block::CodeBlock { code, attr, .. } => {
+                if after_code {
+                    let style = self.body_style();
+                    self.push_p(&style, "", "");
+                }
                 self.code_block(code, attr);
+                self.after_code = true;
+            }
+            Block::Mermaid { code, attr } => {
+                match crate::mermaid_picture(code, &mut self.warnings) {
+                    Some(Block::Paragraph(inlines)) => {
+                        if let Some(Inline::Image(image)) = inlines.into_iter().next() {
+                            // A figure without a caption (the alt text stays the
+                            // picture's description), carrying the block's id.
+                            let mut attr = attr.clone();
+                            attr.kv.push(("fig-alt".into(), image.alt_text()));
+                            self.figure(&Image {
+                                alt: Vec::new(),
+                                attr,
+                                ..image
+                            });
+                        }
+                    }
+                    Some(other) => self.block(&other, depth),
+                    None => self.code_block(code, attr),
+                }
             }
             Block::BlockQuote(inner) => {
                 let style = self.style("BlockText");

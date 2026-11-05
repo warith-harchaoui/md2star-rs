@@ -378,10 +378,14 @@ fn code_blocks_mermaid_and_page_breaks() {
         xml.contains("<w:br w:type=\"page\"/>"),
         "--- is a page break (md2star)"
     );
-    assert!(out
-        .warnings
-        .iter()
-        .any(|w| w.code == "mermaid-not-rendered"));
+    // Without the `mermaid` feature the diagram stays as its source, with a warning
+    // (with it, `docx_images.rs` checks the picture).
+    if cfg!(not(feature = "mermaid")) {
+        assert!(out
+            .warnings
+            .iter()
+            .any(|w| w.code == "mermaid-not-rendered"));
+    }
 }
 
 #[test]

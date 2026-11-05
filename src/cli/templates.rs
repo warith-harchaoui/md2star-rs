@@ -42,7 +42,7 @@ pub fn run(args: &TemplatesArgs) -> Result<()> {
     match &args.action {
         TemplatesAction::List => {
             for t in templates {
-                println!(
+                out!(
                     "{}\t{}\t{} bytes",
                     t.format.extension(),
                     t.name,
@@ -59,7 +59,7 @@ pub fn run(args: &TemplatesArgs) -> Result<()> {
                     crate::Error::unsupported(format!("no bundled `{format}` template"))
                 })?;
             std::fs::write(output, found.bytes)?;
-            println!("wrote {}", output.display());
+            out!("wrote {}", output.display());
             Ok(())
         }
         TemplatesAction::Layouts { template } => {
@@ -69,7 +69,7 @@ pub fn run(args: &TemplatesArgs) -> Result<()> {
             };
             let info = crate::pptx::template::inspect(&bytes)?;
             let (w, h) = info.slide_size;
-            println!(
+            out!(
                 "slide {:.2} x {:.2} in; theme fonts: {} / {}",
                 w as f64 / 914_400.0,
                 h as f64 / 914_400.0,
@@ -78,7 +78,7 @@ pub fn run(args: &TemplatesArgs) -> Result<()> {
             );
             for layout in &info.layouts {
                 let role = crate::pptx::fit::archetype(layout, info.slide_size);
-                println!("{}\t{}", layout.name, role.label());
+                out!("{}\t{}", layout.name, role.label());
                 for p in layout.placeholders.iter().filter(|p| !p.is_latent()) {
                     let frame = p.frame.map_or_else(
                         || "inherited box".to_string(),
@@ -92,7 +92,7 @@ pub fn run(args: &TemplatesArgs) -> Result<()> {
                             )
                         },
                     );
-                    println!(
+                    out!(
                         "\t{} idx={}\t{frame}\t{} pt{}",
                         p.kind,
                         p.idx,

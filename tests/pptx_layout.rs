@@ -56,8 +56,11 @@ fn role_named_template() -> Vec<u8> {
 
 #[test]
 fn roles_land_on_the_layouts_the_template_names_like_md2star_does() {
-    // The same ten layouts `md2pptx --smart-layout --template` picks on this template
-    // (checked against md2star 3.12): hints and roles decide, no model is asked.
+    // The layouts `md2pptx --smart-layout --no-visual-confirm --template` picks on this
+    // template: identical to md2star 3.12 on all ten; md2star 3.13.1 (re-measured
+    // 2026-11-05) agrees on nine and puts the lone table of slide 8 on "Two Content",
+    // leaving one box empty, where this crate keeps "Title and Content". Hints and roles
+    // decide, no model is asked.
     let mut o = options();
     o.reference_doc = Some(role_named_template());
     let md = std::fs::read_to_string(fixtures().join("deck.md")).unwrap();

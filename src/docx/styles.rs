@@ -377,33 +377,6 @@ pub(super) fn attr_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     Some(&tag[at..end])
 }
 
-/// Our own `styles.xml` (no reference document): document defaults plus every style the
-/// writer may use, so a style never needs injecting.
-pub(super) fn default_styles(lang: Option<&str>) -> String {
-    let lang = lang.map_or_else(String::new, |l| {
-        format!("<w:lang w:val=\"{}\"/>", super::xml::escape_attr(l))
-    });
-    let mut s = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:eastAsiaTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:cstheme="minorBidi"/><w:sz w:val="22"/><w:szCs w:val="22"/>"#,
-    );
-    s.push_str(&lang);
-    s.push_str(r#"</w:rPr></w:rPrDefault><w:pPrDefault/></w:docDefaults>"#);
-    for d in DEFS {
-        s.push_str(d.xml);
-    }
-    s.push_str(r#"<w:style w:type="numbering" w:default="1" w:styleId="NoList"><w:name w:val="No List"/><w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/></w:style></w:styles>"#);
-    // Our package carries no theme, so name the fonts instead of the theme's slots.
-    s.replace(
-        r#"w:asciiTheme="majorHAnsi" w:hAnsiTheme="majorHAnsi" w:eastAsiaTheme="majorEastAsia" w:cstheme="majorBidi""#,
-        r#"w:ascii="Calibri Light" w:hAnsi="Calibri Light" w:eastAsia="Calibri Light" w:cs="Calibri Light""#,
-    )
-    .replace(
-        r#"w:asciiTheme="minorHAnsi" w:eastAsiaTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:cstheme="minorBidi""#,
-        r#"w:ascii="Calibri" w:eastAsia="Calibri" w:hAnsi="Calibri" w:cs="Calibri""#,
-    )
-}
-
 /// Set the document language in a reference `styles.xml`'s run defaults.
 pub(super) fn set_language(styles_xml: &str, lang: &str) -> String {
     let lang_tag = format!("<w:lang w:val=\"{}\"/>", super::xml::escape_attr(lang));

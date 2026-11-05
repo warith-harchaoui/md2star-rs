@@ -27,10 +27,10 @@ cargo test --all
 echo "pre-push: cargo test --all --no-default-features"
 cargo test --all --no-default-features
 
-# The in-process PDF writer (Typst) and the Mermaid renderer: off by default, so the
-# two runs above never reach their tests.
-echo "pre-push: cargo test --all --features pdf,mermaid"
-cargo test --all --features pdf,mermaid
+# Every feature (the PDF writer, Mermaid, the layout judge, remote images): off by
+# default, so the two runs above never reach their tests.
+echo "pre-push: cargo test --all --all-features"
+cargo test --all --all-features
 
 echo "pre-push: cargo doc (warnings are errors)"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --quiet
@@ -53,10 +53,10 @@ if command -v rustup >/dev/null 2>&1; then
     # With the PDF writer and Mermaid too. Typst's `psm` assembles a few lines with the
     # target's C toolchain: the host clang can do it for both targets (an app build
     # uses Xcode's or the NDK's), with the host `ar` to archive the object.
-    echo "pre-push: cargo check --lib --no-default-features --features pdf,mermaid --target ${target}"
+    echo "pre-push: cargo check --lib --no-default-features --features svg,pdf,mermaid --target ${target}"
     CC_aarch64_linux_android=clang AR_aarch64_linux_android=ar \
       RUSTC="$rustc_bin" CARGO_TARGET_DIR="$(git rev-parse --show-toplevel)/target/cross" \
-      "$cargo_bin" check --lib --no-default-features --features pdf,mermaid --target "$target" --quiet
+      "$cargo_bin" check --lib --no-default-features --features svg,pdf,mermaid --target "$target" --quiet
   done
 else
   echo "pre-push: rustup not found — cross-device check skipped (CI still runs it)" >&2
@@ -64,8 +64,12 @@ fi
 
 # The checks above build against the committed Cargo.lock and therefore
 # cannot see a dependency range that has gone bad for everyone downstream.
-echo "pre-push: fresh resolve (no Cargo.lock)"
-"$(git rev-parse --show-toplevel)/scripts/check-fresh-resolve.sh"
+# Twice: the bare core (a range that breaks only without default features is how
+# ppt-rs made 0.4.0 uninstallable) and every feature (which includes the defaults).
+for features in "--no-default-features" "--all-features"; do
+  echo "pre-push: fresh resolve (no Cargo.lock) ${features}"
+  "$(git rev-parse --show-toplevel)/scripts/check-fresh-resolve.sh" "${features}"
+done
 
 echo "pre-push: OK"
 
