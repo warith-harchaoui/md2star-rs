@@ -236,18 +236,35 @@ pub fn default_title(lang: Option<&str>) -> &'static str {
 /// [`default_title`]), and [`apply`].
 ///
 /// Without any bibliography file the document comes back unchanged (citations stay as
-/// written, as with Pandoc without `--citeproc`).
+/// written, as with Pandoc without `--citeproc`). A file that cannot be read or parsed is
+/// a `bibliography-unreadable` warning and is skipped; when none can be read, the
+/// citations stay as written.
 ///
 /// # Errors
 ///
-/// [`Error::Bib`] when a bibliography file cannot be read or parsed.
+/// None today; the `Result` keeps room for a failure a caller must see.
 pub fn resolve(doc: &Document, options: &Options) -> Result<(Document, Vec<Warning>)> {
     let paths = files(doc, options);
     if paths.is_empty() {
         return Ok((doc.clone(), Vec::new()));
     }
-    let bib = load(&paths)?;
+    // A missing or broken file is a warning, not a failed conversion: the citations
+    // then stay as written, which the reader of the document can still follow.
     let mut warnings = Vec::new();
+    let mut bib = Bibliography::default();
+    let mut loaded = 0;
+    for path in &paths {
+        match load(std::slice::from_ref(path)) {
+            Ok(one) => {
+                bib.extend(one);
+                loaded += 1;
+            }
+            Err(e) => warnings.push(Warning::new("bibliography-unreadable", e.to_string())),
+        }
+    }
+    if loaded == 0 {
+        return Ok((doc.clone(), warnings));
+    }
     let requested = options
         .citation_style
         .clone()

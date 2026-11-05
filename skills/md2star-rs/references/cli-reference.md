@@ -19,7 +19,7 @@ identical; only the certainty differs.
 ## The command tree
 
 ```
-md2star-rs docx      <INPUT.md> [common flags]                  (= md2docx)
+md2star-rs docx      <INPUT.md> [common flags] [--csl FILE]     (= md2docx)
 md2star-rs pptx      <INPUT.md> [common flags] [deck flags]     (= md2pptx)
 md2star-rs pdf       <INPUT.md> [common flags]
 md2star-rs twin      <INPUT.docx|INPUT.pptx> [--out DIR] [--no-images]
@@ -38,16 +38,45 @@ Deck flags: `--template PATH` (wins over `--reference-doc`), `--min-pt N`,
 
 - `--output` defaults to the input path with its extension swapped, so
   `report.md` becomes `report.docx` beside it.
-- `--reference-doc` styles a `.docx` after an existing Word file: its styles,
-  theme, fonts and page setup are inherited, and headings, quotes, code and
-  list items use its named styles.
+- `--reference-doc` styles a `.docx` after an existing Word file, as Pandoc
+  does: its styles, theme, fonts, settings, page setup, headers and footers are
+  kept; every paragraph and character style is taken from it by id or by name
+  (a French Word's `Titre1` is its `heading 1`), and a style it lacks is added.
 - For a deck, each `#` heading starts a slide and the body flattens to bullets
   (the v0.4 writer, kept behind the default `legacy-pptx` feature).
+
+## `docx`
+
+What `md2star docx` (Pandoc underneath) does, in process:
+
+- **Title block** from the front matter (`title`, `subtitle`, `author`, `date`,
+  `abstract`) in the `Title`, `Subtitle`, `Author`, `Date`, `Abstract` styles,
+  also written to the document properties. Without a front-matter title the
+  first `#` heading becomes the title, authors and date follow it (md2star's
+  rule). `--author "A, B"` and `--date` override the front matter.
+- **`--toc`** (or `toc: true`, `toc-depth`, `toc-title`): a Word table-of-contents
+  field Word rebuilds with page numbers on opening, pre-filled with linked entries
+  for readers that do not update fields.
+- **Images**: PNG, JPEG, GIF, BMP, TIFF embedded; SVG embedded with the PNG
+  fallback Word requires (rasterised in process, feature `svg`); WebP and ICO
+  are not embedded (Word cannot show them) and warn. Sized to the text column,
+  `{width=50%}` / `{width=3in}` honoured, alt text kept, captioned figures centred.
+- **Equations**: native Word equations (OMML) from the LaTeX; an unknown command
+  stays readable and warns.
+- **Citations**: `--bib FILE` (or `bibliography:`) with `--citation-style
+  author-date|numeric`, `citation-style:`, or the *name* of a CSL file
+  (`--csl ieee.csl`, `csl:`) — the file itself is never read. Author-date is
+  Chicago (Pandoc's default), numeric is IEEE. The list goes under
+  `--bibliography-name`, `reference-section-title`, or the localised
+  "Bibliography".
+- **Links** are real hyperlinks; `#id` links jump to headings, figures, tables.
+- `---` is a page break (md2star's rule); footnotes and `^[inline notes]` are
+  Word footnotes; tables keep their column alignment and caption.
 
 ## Not ported yet — and how that shows
 
 The full port of md2star is in progress. A flag that is accepted but not
-honoured yet (`--bib`, `--toc`, a deck's `--reference-doc`/`--template`,
+honoured yet (a deck's `--reference-doc`/`--template`,
 `--min-pt`, `--smart-layout`) produces a warning on stderr naming it; the
 conversion still runs. A subcommand that is not ported yet (`audit`,
 `templates`) exits non-zero with `not ported yet: …`. Nothing is

@@ -60,6 +60,26 @@ that the core builds for iOS and Android.
   `::: {#refs}` div or at the end under `--bibliography-name`,
   `reference-section-title` or the localised "Bibliography"; `nocite` is read.
   CSL files themselves are not read.
+- **`md2star-rs docx` is the equivalent of `md2star docx`, without Pandoc.** The
+  DOCX writer now writes WordprocessingML itself, with Pandoc's vocabulary, so the
+  same reference templates style both: a title block from the front matter
+  (`Title`, `Subtitle`, `Author`, `Date`, `Abstract`, and `docProps/core.xml`),
+  md2star's rule of the first heading as title; a table of contents (`--toc`,
+  `toc: true`) as a Word field rebuilt on opening and pre-filled for readers that
+  do not update fields; embedded images (PNG, JPEG, GIF, BMP, TIFF, and SVG with
+  the PNG fallback Word requires, rasterised in process by `resvg` behind the new
+  default feature `svg`) sized to the text column with their alt text, figures
+  centred with an `ImageCaption`; real hyperlinks and bookmarks on headings,
+  figures, tables and divs for `#id` links; native equations; citations and a
+  `Bibliography`-styled reference list; Word footnotes everywhere, tables
+  included; strikeout; `custom-style` divs; `---` as a page break; md2star's
+  `MyTable` / `MyTableSmall` table styles. With `--reference-doc`, every part of
+  the reference is kept (theme, settings, headers and footers with their
+  images), its styles are used by id or by name and the missing ones added,
+  its numbering kept with ours above it. The output stays byte-identical run
+  after run.
+- **`md2star-rs docx --csl FILE`**: the CSL file's name picks the citation style
+  (the file is not read).
 - **A LaTeX → OMML converter** (`docx::math`): fractions, scripts, roots, n-ary
   operators with bounds, limits under `\lim`/`\max`, `\left…\middle…\right`
   and matched brackets, the matrix environments (`pmatrix`, `bmatrix`, `cases`,
@@ -92,8 +112,14 @@ that the core builds for iOS and Android.
 
 - The DOCX writer moved to `md2star_rs::docx` (`md2star_rs::writer` remains as
   a deprecated alias). Superscript and subscript are real vertical alignment,
-  inline notes are real Word footnotes, a table caption follows its table, and
-  speaker notes stay out of the document.
+  inline notes are real Word footnotes, and speaker notes stay out of the
+  document. `docx::build` / `build_with_reference` (and the v0.4 functions built
+  on them, `markdown_to_docx_bytes*`) keep the v0.4 `docx-rs` writer, since they
+  return a `docx_rs::Docx`; `convert`, `docx::render` and the CLI use the new one.
+- A table caption now precedes its table, in the `TableCaption` style, as Pandoc
+  places it.
+- A `.bib` that cannot be read or parsed is a warning, not a failed conversion:
+  the citations it would have resolved stay as written.
 - The `ppt-rs` writer moved behind the default feature `legacy-pptx`. ppt-rs
   pulls `zip` 0.6 with bzip2 and zstd compiled from C; that C is what kept the
   core from building for iOS and Android. Our own `zip` is now deflate-only.

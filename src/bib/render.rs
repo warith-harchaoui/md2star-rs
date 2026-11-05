@@ -64,7 +64,8 @@ pub(super) fn apply(
                     content: vec![Inline::Text(title.to_string())],
                     attr: Attr {
                         id: Some("bibliography".into()),
-                        classes: vec!["unnumbered".into()],
+                        // `bibliography-heading`: writers never take it for the title.
+                        classes: vec!["unnumbered".into(), "bibliography-heading".into()],
                         kv: Vec::new(),
                     },
                 });
@@ -478,6 +479,9 @@ impl<'a> Formatter<'a> {
     }
 
     fn numeric_citation(&self, cites: &[Citation]) -> String {
+        // Numbers ascend inside a group, as citeproc sorts them: `[1], [2]`.
+        let mut cites: Vec<&Citation> = cites.iter().collect();
+        cites.sort_by_key(|c| self.index[c.key.as_str()]);
         let items: Vec<String> = cites
             .iter()
             .map(|c| {
@@ -1317,7 +1321,7 @@ mod tests {
 
     #[test]
     fn numeric_matches_pandoc_ieee() {
-        // Pandoc 3.6 + ieee.csl: "One [1, p. 3], two [2], [1], in-text [2] says,
+        // Pandoc 3.6 + ieee.csl: "One [1, p. 3], two [1], [2], in-text [2] says,
         // suppress [1]."
         let (doc, warnings) = render(
             "One [@pearl2009, p. 3], two [@pearl2000; @pearl2009], in-text @pearl2000 says, \
@@ -1327,7 +1331,7 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(
             first_paragraph(&doc),
-            "One [1, p. 3], two [2], [1], in-text [2] says, suppress [1]."
+            "One [1, p. 3], two [1], [2], in-text [2] says, suppress [1]."
         );
         assert_eq!(
             refs(&doc),

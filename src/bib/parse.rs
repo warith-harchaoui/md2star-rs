@@ -102,7 +102,13 @@ fn build_entry(key: String, kind: String, raw: Vec<(String, String)>) -> Entry {
             "editor" => editors = parse_names(&value),
             _ => {}
         }
-        fields.insert(name, decode_latex(&value));
+        // Identifiers are verbatim: a `~` in a URL is a tilde, not a tie.
+        let decoded = if VERBATIM_FIELDS.contains(&name.as_str()) {
+            value.trim().to_string()
+        } else {
+            decode_latex(&value)
+        };
+        fields.insert(name, decoded);
     }
     Entry {
         key,
@@ -112,6 +118,9 @@ fn build_entry(key: String, kind: String, raw: Vec<(String, String)>) -> Entry {
         editors,
     }
 }
+
+/// Fields whose value is an identifier, kept as written.
+const VERBATIM_FIELDS: &[&str] = &["url", "doi", "eprint", "file", "isbn", "issn", "pdf"];
 
 /// The predefined month macros.
 fn month_macros() -> HashMap<String, String> {
@@ -533,6 +542,17 @@ pub fn decode_latex(raw: &str) -> String {
                 out.push('\u{a0}');
                 i += 1;
             }
+            // TeX's quotes: `` and '' are double, ` and ' single (curly).
+            '`' | '\'' => {
+                let double = chars.get(i + 1) == Some(&c);
+                out.push(match (c, double) {
+                    ('`', true) => '“',
+                    ('`', false) => '‘',
+                    (_, true) => '”',
+                    _ => '’',
+                });
+                i += if double { 2 } else { 1 };
+            }
             '-' => {
                 let mut n = 0;
                 while chars.get(i + n) == Some(&'-') {
@@ -859,6 +879,8 @@ mod tests {
         assert_eq!(k1.field("year"), Some("2001"));
         assert_eq!(k1.field("note"), Some("Quoted and braced"));
         assert_eq!(bib.get("k2").unwrap().field("title"), Some("Parens"));
+        let urls = parse("@misc{u, url = {https://x.org/~me/a_b}, title = {~}}").unwrap();
+        assert_eq!(urls.entries[0].field("url"), Some("https://x.org/~me/a_b"));
     }
 
     #[test]
@@ -913,6 +935,10 @@ mod tests {
             "Deep Learning"
         );
         assert_eq!(decode_latex("multi\n   line"), "multi line");
+        assert_eq!(
+            decode_latex("l'intelligence ``quoted''"),
+            "l’intelligence “quoted”"
+        );
     }
 
     #[test]

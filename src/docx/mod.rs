@@ -1,802 +1,1219 @@
-//! DOCX writer: [`Document`] → `.docx` bytes, through `docx-rs`.
+//! DOCX writer: [`Document`] → `.docx` bytes, in process and in pure Rust.
 //!
-//! # What this module must do (phase 2: the DOCX port)
+//! [`render`] writes WordprocessingML directly, with the vocabulary Pandoc's DOCX writer
+//! uses, so that `md2star-rs docx` and `md2star docx` (Pandoc underneath) produce the
+//! same kind of document, styled by the same reference templates:
 //!
-//! Reach parity with `md2star docx`, in process and in pure Rust: images embedded at
-//! their real aspect ratio and scaled to the page ([`images`], fed by
-//! [`crate::resources`]), real hyperlinks (relationships, not just the visible text),
-//! native OMML equations from the raw LaTeX in [`Inline::Math`] ([`math`]), citations
-//! and a bibliography from a `.bib` ([`citations`], built on [`crate::bib`]), a table of
-//! contents, figure and table captions, and `--reference-doc` (already here).
-//!
-//! # Files this module owns
-//!
-//! `src/docx/mod.rs` (this writer), `src/docx/math.rs`, `src/docx/citations.rs`,
-//! `src/docx/images.rs`, the whole of `src/bib/`, `src/cli/docx.rs`, and the
-//! `tests/docx_*.rs` integration tests. [`math::latex_to_omml`] is also the one LaTeX →
-//! OMML converter the PPTX writer calls (PowerPoint reads the same OMML).
-//!
-//! # State at the end of phase 1
-//!
-//! The v0.4 writer below, adapted to the full AST: headings route through the reference
-//! template's named styles; native list numbering; real Word footnotes (inline notes
-//! included); task-list boxes. Math, citations and images still render as text, and the
-//! entry point [`render`] warns about every option it does not honour yet.
+//! - **Title block**: the front matter's title, subtitle, authors, date and abstract in
+//!   the `Title`, `Subtitle`, `Author`, `Date`, `AbstractTitle`/`Abstract` styles, also
+//!   written to `docProps/core.xml`. Without a front-matter title, md2star's rule: the
+//!   first level-1 heading becomes the title, and authors and date follow it in the
+//!   `Subtitle` style.
+//! - **Table of contents** (`--toc`, `toc: true`): a Word `TOC \o "1-3" \h \z \u` field
+//!   marked dirty, so Word rebuilds it (with page numbers) on opening; its result is
+//!   pre-filled with linked entries, so a reader that does not update fields (LibreOffice,
+//!   a phone's preview) still shows one.
+//! - **Text**: `FirstParagraph`/`BodyText`, bold, italic, strikeout, superscript,
+//!   subscript, inline code (`VerbatimChar`), code blocks (`SourceCode`), block quotes
+//!   (`BlockText`), page breaks for `---` (md2star's rule), native list numbering, task
+//!   boxes `☐`/`☒`, Word footnotes for `[^n]` and `^[…]`.
+//! - **Links**: external ones are real hyperlinks (a relationship and the `Hyperlink`
+//!   style); `#id` links jump to the bookmark every heading, figure, table and div with
+//!   an id carries.
+//! - **Images** (`images.rs`): embedded, sized by [`crate::resources::fit_emu`], with
+//!   their alt text; a figure is a centred `CaptionedFigure` paragraph and an
+//!   `ImageCaption`.
+//! - **Tables**: column alignments, a header row repeated across pages, md2star's
+//!   `MyTable` / `MyTableSmall` styles (the small one from six columns or 800
+//!   characters), the caption before the table in `TableCaption`.
+//! - **Equations** ([`math`]): native OMML.
+//! - **Citations** ([`citations`], [`crate::bib`]): rendered, with the reference list in
+//!   the `Bibliography` style.
+//! - **`--reference-doc`**: see `package.rs`. Every style used is taken from the
+//!   reference (by id, else by name), or added to it when it lacks one.
 //!
 //! # Determinism
 //!
-//! Footnote ids *and* paragraph ids (`w14:paraId`) come from our own per-document
-//! counters — not `docx-rs`'s process-global atomics — and no timestamps are written, so
-//! the same Markdown yields byte-identical `.docx` output on every run, even when
-//! conversions run concurrently. Every paragraph must be minted by
-//! `Writer::new_paragraph`.
+//! Every id (relationships, footnotes, bookmarks, drawings, numbering) comes from a
+//! per-document counter, the zip entries are written in a fixed order with a fixed
+//! timestamp, and no date is stamped into the properties: the same Markdown and options
+//! give the same bytes on every run.
+//!
+//! # Files this module owns
+//!
+//! `src/docx/` (this writer, `math.rs`, `citations.rs`, `images.rs`, `package.rs`,
+//! `styles.rs`, `xml.rs`, and `legacy.rs` — the v0.4 `docx-rs` writer behind
+//! [`build`] / [`build_with_reference`]), the whole of `src/bib/`, `src/cli/docx.rs`,
+//! and the `tests/docx_*.rs` integration tests. [`math::latex_to_omml`] is also the
+//! LaTeX → OMML converter the PPTX writer calls.
 
 pub mod citations;
-pub mod images;
+mod images;
+mod legacy;
 pub mod math;
+mod package;
+mod styles;
+mod xml;
+
+pub use legacy::{build, build_with_reference, pack};
 
 use std::collections::{HashMap, HashSet};
 
-use std::io::Cursor;
-
-use docx_rs::{
-    AbstractNumbering, Docx, Footnote, IndentLevel, Level, LevelJc, LevelText, NumberFormat,
-    Numbering, NumberingId, Paragraph, Run, RunFonts, SpecialIndentType, Start, Table, TableCell,
-    TableRow, VertAlignType,
+use crate::ast::{
+    cite_text, plain_text, Align, Attr, Block, Document, Image, Inline, ListItem, Warning,
 };
-
-use crate::ast::{cite_text, Block, Document, Inline, ListItem, Warning};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::options::{Options, Rendered};
+use crate::resources::{fit_emu, is_remote, Resolver};
+
+use package::{Base, Output, RelSet};
+use styles::StyleSheet;
+use xml::{escape_attr, escape_text};
+
+/// EMU per twip (1/20 point).
+const EMU_PER_TWIP: u64 = 635;
+/// Word supports nine list levels (0..=8).
+const MAX_LEVEL: usize = 8;
 
 /// Convert a parsed document to `.docx` bytes.
 ///
-/// The entry point every caller (the library API, the CLI) goes through. Options this
-/// writer does not honour yet produce a `not-yet-ported` warning rather than being
-/// ignored silently.
+/// The entry point every caller (the library API, the CLI) goes through.
 ///
 /// # Errors
 ///
-/// [`Error::Template`] when `options.reference_doc` is not a readable `.docx`;
-/// [`Error::Docx`] when packing fails.
+/// [`crate::Error::Template`] when `options.reference_doc` is not a readable `.docx`;
+/// [`crate::Error::Docx`] when packing fails. Everything else (a missing image or
+/// bibliography, an unknown citation key or LaTeX command) is a warning.
 pub fn render(doc: &Document, options: &Options) -> Result<Rendered> {
     let mut warnings = doc.warnings.clone();
-    let mut unported = |what: &str| {
-        warnings.push(Warning::new(
-            "not-yet-ported",
-            format!("DOCX: {what} is not ported to md2star-rs yet and was ignored"),
-        ));
+    let (doc, more) = citations::apply(doc, options)?;
+    warnings.extend(more);
+    let lang = options.lang.clone().or_else(|| doc.meta.lang.clone());
+    let base = match &options.reference_doc {
+        Some(bytes) => Base::from_reference(bytes, lang.as_deref())?,
+        None => Base::default_base(lang.as_deref()),
     };
-    if !options.bibliography.is_empty() || !doc.meta.bibliography.is_empty() {
-        unported("the bibliography (--bib)");
-    }
-    if options.toc || doc.meta.toc == Some(true) {
-        unported("the table of contents (--toc)");
-    }
-    let docx = match &options.reference_doc {
-        Some(bytes) => {
-            let template = docx_rs::read_docx(bytes).map_err(|e| Error::Template(e.to_string()))?;
-            build_with_reference(&doc.blocks, template)
-        }
-        None => build(&doc.blocks),
-    };
+    let mut writer = Writer::new(&base, options, &doc, lang.clone());
+    writer.document(&doc);
+    warnings.append(&mut writer.warnings);
+    let output = writer.finish(&base, &doc, lang.as_deref());
     Ok(Rendered {
-        bytes: pack(docx)?,
+        bytes: package::pack(base, output)?,
         warnings,
     })
 }
 
-/// Pack a built [`Docx`] into raw `.docx` bytes (`docx-rs` packs into any `Write + Seek`).
-///
-/// # Errors
-///
-/// [`Error::Docx`] when `docx-rs` fails to serialise or zip the document.
-pub fn pack(docx: Docx) -> Result<Vec<u8>> {
-    let mut buffer = Cursor::new(Vec::new());
-    docx.build()
-        .pack(&mut buffer)
-        .map_err(|e| Error::Docx(e.to_string()))?;
-    Ok(buffer.into_inner())
+/// Character formatting in effect.
+#[derive(Debug, Clone, Copy, Default)]
+struct Fmt {
+    bold: bool,
+    italic: bool,
+    strike: bool,
+    sup: bool,
+    sub: bool,
+    code: bool,
+    link: bool,
 }
 
-/// Font used for inline code and code blocks.
-const MONO_FONT: &str = "Consolas";
-/// Word supports nine list levels (0..=8); deeper nesting is clamped to the last.
-const MAX_LEVEL: usize = 8;
-
-/// The numbering id `docx-rs` keeps for itself, in both id namespaces.
-///
-/// `Numberings::build_to` unconditionally writes its own `<w:abstractNum w:abstractNumId="1">`
-/// and `<w:num w:numId="1">` into `numbering.xml` *before* whatever we added, whether or not
-/// anything uses them. Our own ids therefore have to start above 1 in both namespaces: until
-/// 0.4.3 the bullet instance was `numId="1"` and the file carried two `<w:num w:numId="1">`
-/// entries, of which Word reads the first — so every bullet list rendered as `docx-rs`'s
-/// default decimal numbering, `1. 2. 3.` where dots were asked for.
-const DOCX_RS_RESERVED_ID: usize = 1;
-/// The deepest heading level Word ships a built-in `HeadingN` style for; `#######`+ clamps here.
-const MAX_HEADING_STYLE: u8 = 6;
-
-/// Build a complete [`Docx`] from a parsed document, using our own default styling.
-///
-/// Footnote *definitions* are indexed up front and pulled in at each reference site, so a
-/// definition may sit anywhere in the source relative to its reference(s).
-pub fn build(blocks: &[Block]) -> Docx {
-    render_blocks(Writer::new(), blocks)
-}
-
-/// Build a [`Docx`] whose styles, theme, fonts and page setup are inherited from a reference
-/// `template` (the `--reference-doc` feature — Pandoc parity).
-///
-/// The template's *body content* is discarded; only its **styling** is kept. Headings, block
-/// quotes, code blocks and list items are then emitted through the template's named styles
-/// (`Heading1`…`Heading6`, `Quote`, `SourceCode`/`HTMLPreformatted`, `ListParagraph`) when
-/// those styles exist, falling back to our inline formatting when they don't — so a document
-/// converted against a house template comes out looking like that template.
-pub fn build_with_reference(blocks: &[Block], template: Docx) -> Docx {
-    render_blocks(Writer::with_reference(template), blocks)
-}
-
-/// Shared render loop: index footnote definitions, then emit every non-definition block.
-///
-/// Both [`build`] and [`build_with_reference`] differ only in how their [`Writer`] is
-/// constructed; the traversal that turns blocks into paragraphs is identical, so it lives
-/// here once.
-fn render_blocks(mut writer: Writer, blocks: &[Block]) -> Docx {
-    // Index footnote definitions up front so a reference can precede its definition.
-    writer.index_footnotes(blocks);
-    for block in blocks {
-        // Definitions are not rendered inline; they are inlined at their reference.
-        if !matches!(block, Block::FootnoteDef { .. }) {
-            writer.write_block(block, 0);
-        }
-    }
-    writer.finish()
-}
-
-/// Holds the document under construction plus the counters that make list numbering and
-/// footnote ids deterministic.
-struct Writer {
-    /// `Option` so builder methods (which consume `self`) can be threaded through `take`.
-    docx: Option<Docx>,
-    /// Next ordered-list numbering instance id to hand out (bullets reuse [`Writer::bullet_num_id`]).
-    next_num_id: usize,
-    /// Next footnote id — our own counter, so output is reproducible run to run.
-    next_footnote_id: usize,
-    /// Next paragraph id (`w14:paraId`) — see [`Writer::new_paragraph`] for why we own it.
-    next_para_id: usize,
-    /// Abstract-numbering id for ordered/decimal lists. A field (not a const) because a
-    /// reference template may already use low ids, so [`Writer::with_reference`] offsets ours
-    /// upward; each ordered list mints an instance pointing back at this abstract id.
-    decimal_abstract_id: usize,
-    /// Next abstract-numbering id to hand out, for the one case that cannot share
-    /// [`Writer::decimal_abstract_id`]: a list whose first number is not 1. OOXML puts the
-    /// start number on the abstract definition's level, not on the instance, so such a list
-    /// needs a definition of its own. Separate counter from [`Writer::next_num_id`] because
-    /// `abstractNumId` and `numId` are separate OOXML namespaces.
-    next_abstract_id: usize,
-    /// The single numbering *instance* shared by every bullet list (bullets don't count, so
-    /// sharing one instance is harmless and keeps the numbering part small).
-    bullet_num_id: usize,
-    /// Whether to emit headings/quotes through the template's named styles (reference mode)
-    /// instead of our inline bold/size formatting.
-    use_named_styles: bool,
-    /// Style ids present in the reference template, so we can fall back to inline formatting
-    /// for any named style the template happens not to define. Empty without a template.
-    styles: HashSet<String>,
-    /// Footnote label → its definition's block content.
+/// The writer's state for one document.
+struct Writer<'a> {
+    options: &'a Options,
+    lang: Option<String>,
+    styles: StyleSheet,
+    resolver: Resolver,
+    doc_rels: RelSet,
+    foot_rels: RelSet,
+    media: images::Media,
+    /// The body being written (swapped out while a footnote is written).
+    out: String,
+    footnotes: Vec<String>,
+    next_footnote: i64,
+    separators: (i64, i64),
     footnote_defs: HashMap<String, Vec<Block>>,
+    in_note: bool,
+    bookmarks: HashSet<String>,
+    next_bookmark: usize,
+    next_drawing: usize,
+    abstract_nums: String,
+    nums: String,
+    next_abstract: usize,
+    next_num: usize,
+    bullet_num: usize,
+    decimal_abstract: usize,
+    /// The next body paragraph opens a section (after a heading): `FirstParagraph`.
+    first_para: bool,
+    /// A paragraph style imposed by the context (quote, list, footnote, div).
+    para_style: Option<String>,
+    /// Content placed at the start of the next paragraph (a footnote's number).
+    para_prefix: String,
+    /// The text area for images, in EMU (the column inside a table).
+    box_width: u64,
+    box_height: u64,
+    text_width_twips: u64,
+    warnings: Vec<Warning>,
 }
 
-impl Writer {
-    /// A writer with our own default styling (no reference template).
-    fn new() -> Self {
-        // No template: ids start just above the one `docx-rs` reserves (see
-        // `DOCX_RS_RESERVED_ID`), headings/quotes use inline formatting.
-        Self::assemble(Docx::new(), DOCX_RS_RESERVED_ID + 1, false, HashSet::new())
+impl<'a> Writer<'a> {
+    fn new(base: &Base, options: &'a Options, doc: &Document, lang: Option<String>) -> Self {
+        let (max_abstract, max_num) = base
+            .numbering
+            .as_deref()
+            .map(package::numbering_max)
+            .unwrap_or((0, 0));
+        let mut footnote_defs = HashMap::new();
+        collect_footnote_defs(&doc.blocks, &mut footnote_defs);
+        let mut w = Writer {
+            options,
+            lang,
+            styles: StyleSheet::read(&base.styles),
+            resolver: Resolver::from_options(options),
+            doc_rels: RelSet::new(base.doc_rels.clone()),
+            foot_rels: RelSet::new(Vec::new()),
+            media: images::Media::default(),
+            out: String::new(),
+            footnotes: Vec::new(),
+            next_footnote: base.separator_ids.0.max(base.separator_ids.1).max(0) + 1,
+            separators: base.separator_ids,
+            footnote_defs,
+            in_note: false,
+            bookmarks: HashSet::new(),
+            next_bookmark: 1,
+            next_drawing: 1,
+            abstract_nums: String::new(),
+            nums: String::new(),
+            next_abstract: max_abstract + 1,
+            next_num: max_num + 1,
+            bullet_num: 0,
+            decimal_abstract: 0,
+            first_para: true,
+            para_style: None,
+            para_prefix: String::new(),
+            box_width: base.page.text_width * EMU_PER_TWIP,
+            box_height: base.page.text_height * EMU_PER_TWIP,
+            text_width_twips: base.page.text_width,
+            warnings: Vec::new(),
+        };
+        // The two list definitions every list shares.
+        let bullet_abstract = w.alloc_abstract();
+        w.abstract_nums
+            .push_str(&list_definition(bullet_abstract, false, 1));
+        w.decimal_abstract = w.alloc_abstract();
+        w.abstract_nums
+            .push_str(&list_definition(w.decimal_abstract, true, 1));
+        w.bullet_num = w.alloc_num(bullet_abstract);
+        w
     }
 
-    /// A writer that inherits styling from a reference `template` (the `--reference-doc` path).
-    ///
-    /// Starting from the template's own [`Docx`] carries its styles, theme, fonts and — via the
-    /// untouched `document.section_property` — its page size and margins. We only clear the
-    /// template's body paragraphs; our converted content replaces them.
-    fn with_reference(mut template: Docx) -> Self {
-        // Remember which named styles the template actually defines, so heading/quote emission
-        // can fall back to inline formatting for any that are missing.
-        let styles: HashSet<String> = template
-            .styles
-            .styles
-            .iter()
-            .map(|s| s.style_id.clone())
-            .collect();
-        // Discard the template's placeholder body; keep everything else (styles, section setup).
-        template.document.children.clear();
-        // Offset our numbering definitions above anything the template already declares.
-        let num_base = numbering_base(&template);
-        Self::assemble(template, num_base, true, styles)
+    fn warn(&mut self, code: &'static str, message: impl Into<String>) {
+        self.warnings.push(Warning::new(code, message));
     }
 
-    /// Register our bullet + decimal abstract numberings and the shared bullet instance on
-    /// `docx`, offsetting every id by `num_base` so they never collide with a template's own
-    /// numbering. Shared by both constructors.
-    fn assemble(
-        docx: Docx,
-        num_base: usize,
-        use_named_styles: bool,
-        styles: HashSet<String>,
-    ) -> Self {
-        let bullet_abstract_id = num_base;
-        let decimal_abstract_id = num_base + 1;
-        // The bullet instance may reuse the decimal abstract's id: `abstractNumId` and `numId`
-        // are separate OOXML namespaces (this mirrors the no-template default where both are 1).
-        let bullet_num_id = num_base + 1;
-        let docx = docx
-            .add_abstract_numbering(bullet_abstract(bullet_abstract_id))
-            .add_abstract_numbering(decimal_abstract(decimal_abstract_id, 1))
-            .add_numbering(Numbering::new(bullet_num_id, bullet_abstract_id));
-        Writer {
-            docx: Some(docx),
-            // Ordered-list instances start after the reserved bullet instance.
-            next_num_id: bullet_num_id + 1,
-            next_footnote_id: 1,
-            next_para_id: 1,
-            decimal_abstract_id,
-            next_abstract_id: decimal_abstract_id + 1,
-            bullet_num_id,
-            use_named_styles,
-            styles,
-            footnote_defs: HashMap::new(),
+    fn alloc_abstract(&mut self) -> usize {
+        let id = self.next_abstract;
+        self.next_abstract += 1;
+        id
+    }
+
+    fn alloc_num(&mut self, abstract_id: usize) -> usize {
+        let id = self.next_num;
+        self.next_num += 1;
+        self.nums.push_str(&format!(
+            "<w:num w:numId=\"{id}\"><w:abstractNumId w:val=\"{abstract_id}\"/></w:num>"
+        ));
+        id
+    }
+
+    /// The relationships of the part being written.
+    fn rels(&mut self) -> &mut RelSet {
+        if self.in_note {
+            &mut self.foot_rels
+        } else {
+            &mut self.doc_rels
         }
     }
 
-    /// Index a document's footnote definitions before rendering references.
-    fn index_footnotes(&mut self, blocks: &[Block]) {
-        for block in blocks {
-            if let Block::FootnoteDef { label, content } = block {
-                self.footnote_defs.insert(label.clone(), content.clone());
+    fn style(&mut self, id: &'static str) -> String {
+        self.styles.id(id)
+    }
+
+    // ---- The document ----
+
+    fn document(&mut self, doc: &Document) {
+        let promoted = self.title_block(doc);
+        if self.options.toc || doc.meta.toc == Some(true) {
+            self.toc(doc, promoted);
+        }
+        self.first_para = true;
+        for (i, block) in doc.blocks.iter().enumerate() {
+            if Some(i) == promoted {
+                continue;
+            }
+            self.block(block, 0);
+        }
+    }
+
+    /// The title block; returns the index of the heading promoted to title, if any.
+    fn title_block(&mut self, doc: &Document) -> Option<usize> {
+        let meta = &doc.meta;
+        let authors: Vec<String> = match &self.options.author {
+            Some(a) => a
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect(),
+            None => meta.authors.clone(),
+        };
+        let date = self.options.date.clone().or_else(|| meta.date.clone());
+        let (title, promoted): (Option<Vec<Inline>>, Option<usize>) = match &meta.title {
+            Some(t) if !t.trim().is_empty() => (Some(inline_markdown(t)), None),
+            _ => match doc.blocks.iter().position(is_title_candidate) {
+                Some(i) => match &doc.blocks[i] {
+                    Block::Heading { content, .. } => (Some(content.clone()), Some(i)),
+                    _ => (None, None),
+                },
+                None => (None, None),
+            },
+        };
+        if let Some(title) = &title {
+            let style = self.style("Title");
+            let content = self.inlines(title, Fmt::default());
+            self.push_p(&style, "", &content);
+        }
+        if let Some(subtitle) = meta.subtitle.as_deref().filter(|s| !s.trim().is_empty()) {
+            let style = self.style("Subtitle");
+            let content = self.inlines(&inline_markdown(subtitle), Fmt::default());
+            self.push_p(&style, "", &content);
+        }
+        if promoted.is_some() {
+            // md2star: authors on one line, the date on the next, both as subtitle.
+            let style = self.style("Subtitle");
+            if !authors.is_empty() {
+                let line = join_authors(&authors, self.lang.as_deref());
+                let content = self.text_run(&line, Fmt::default());
+                self.push_p(&style, "", &content);
+            }
+            if let Some(date) = date.as_deref().filter(|d| !d.trim().is_empty()) {
+                let content = self.inlines(&inline_markdown(date), Fmt::default());
+                self.push_p(&style, "", &content);
+            }
+        } else {
+            for author in &authors {
+                let style = self.style("Author");
+                let content = self.inlines(&inline_markdown(author), Fmt::default());
+                self.push_p(&style, "", &content);
+            }
+            if let Some(date) = date.as_deref().filter(|d| !d.trim().is_empty()) {
+                let style = self.style("Date");
+                let content = self.inlines(&inline_markdown(date), Fmt::default());
+                self.push_p(&style, "", &content);
             }
         }
+        if let Some(abstract_text) = meta
+            .abstract_text
+            .as_deref()
+            .filter(|a| !a.trim().is_empty())
+        {
+            let style = self.style("AbstractTitle");
+            let heading = match meta.raw.get("abstract-title").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => localised(self.lang.as_deref(), "Abstract", "Résumé").to_string(),
+            };
+            let content = self.text_run(&heading, Fmt::default());
+            self.push_p(&style, "", &content);
+            let style = self.style("Abstract");
+            let saved = self.para_style.replace(style);
+            for block in crate::reader::parse(abstract_text) {
+                self.block(&block, 0);
+            }
+            self.para_style = saved;
+        }
+        promoted
     }
 
-    /// Consume the writer and return the finished document.
-    fn finish(mut self) -> Docx {
-        self.docx.take().expect("docx is present until finish")
-    }
-
-    /// Append a paragraph to the document body.
-    fn push_paragraph(&mut self, paragraph: Paragraph) {
-        let docx = self.docx.take().expect("docx present");
-        self.docx = Some(docx.add_paragraph(paragraph));
-    }
-
-    /// Append a table to the document body.
-    fn push_table(&mut self, table: Table) {
-        let docx = self.docx.take().expect("docx present");
-        self.docx = Some(docx.add_table(table));
-    }
-
-    /// Register a numbering instance (used per ordered list so each restarts on its own).
-    fn register_numbering(&mut self, numbering: Numbering) {
-        let docx = self.docx.take().expect("docx present");
-        self.docx = Some(docx.add_numbering(numbering));
-    }
-
-    /// Register an abstract numbering definition and return its id.
-    fn register_abstract_numbering(&mut self, abstract_numbering: AbstractNumbering) {
-        let docx = self.docx.take().expect("docx present");
-        self.docx = Some(docx.add_abstract_numbering(abstract_numbering));
-    }
-
-    /// Allocate the next abstract-numbering id.
-    fn alloc_abstract_id(&mut self) -> usize {
-        let id = self.next_abstract_id;
-        self.next_abstract_id += 1;
-        id
-    }
-
-    /// Allocate the next ordered-list numbering instance id.
-    fn alloc_num_id(&mut self) -> usize {
-        let id = self.next_num_id;
-        self.next_num_id += 1;
-        id
-    }
-
-    /// Allocate the next (deterministic) footnote id.
-    fn alloc_footnote_id(&mut self) -> usize {
-        let id = self.next_footnote_id;
-        self.next_footnote_id += 1;
-        id
-    }
-
-    /// A fresh paragraph carrying a deterministic, per-document `w14:paraId`.
-    ///
-    /// `docx-rs` stamps every `Paragraph::new()` with an id drawn from a **process-global**
-    /// atomic counter. Two conversions in the same process — or, worse, concurrent threads
-    /// (`cargo test` runs tests in parallel) — therefore interleave their id allocations and
-    /// emit *different* paragraph ids for the *same* input, breaking byte-for-byte idempotence.
-    /// We sidestep that global state entirely by minting ids from our own per-document counter,
-    /// so identical Markdown always yields identical bytes. Every paragraph the writer creates
-    /// MUST go through here (never bare `Paragraph::new()`) or it would fall back to the global id.
-    fn new_paragraph(&mut self) -> Paragraph {
-        let id = self.alloc_para_id();
-        // Match docx-rs's own 8-digit zero-padded hex format so the id looks native.
-        Paragraph::new().id(format!("{id:08x}"))
-    }
-
-    /// Allocate the next (deterministic) paragraph id.
-    fn alloc_para_id(&mut self) -> usize {
-        let id = self.next_para_id;
-        self.next_para_id += 1;
-        id
-    }
-
-    /// The template style id to apply for `id`, or `None` to use our inline formatting.
-    ///
-    /// Returns `Some` only in reference mode *and* when the template actually declares that
-    /// style — the single gate every named-style decision (headings, quotes, code, lists)
-    /// routes through, so "reference mode + style present" is expressed in exactly one place.
-    fn style_for(&self, id: &str) -> Option<String> {
-        (self.use_named_styles && self.styles.contains(id)).then(|| id.to_string())
-    }
-
-    /// Emit one block. `depth` is the current list-nesting level (0 at the top).
-    fn write_block(&mut self, block: &Block, depth: usize) {
-        match block {
-            Block::Heading { level, content, .. } => {
-                // Word ships built-in styles Heading1..Heading6; clamp deeper levels onto 6.
-                let style_id = format!("Heading{}", (*level).min(MAX_HEADING_STYLE));
-                if let Some(style) = self.style_for(&style_id) {
-                    // Reference mode: let the template's Heading style own size/weight/colour,
-                    // so the heading looks like the template rather than our inline defaults.
-                    let mut paragraph = self.new_paragraph().style(&style);
-                    for run in self.inline_runs(content, false, false, true) {
-                        paragraph = paragraph.add_run(run);
-                    }
-                    self.push_paragraph(paragraph);
-                } else {
-                    // Fallback (no template, or the style is absent): bold + a per-level size.
-                    let size = heading_half_points(*level);
-                    let mut paragraph = self.new_paragraph();
-                    for run in self.inline_runs(content, true, false, true) {
-                        paragraph = paragraph.add_run(run.size(size));
-                    }
-                    self.push_paragraph(paragraph);
+    /// The table of contents: a dirty `TOC` field whose result is pre-filled.
+    fn toc(&mut self, doc: &Document, promoted: Option<usize>) {
+        let depth = doc
+            .meta
+            .raw
+            .get("toc-depth")
+            .and_then(|v| v.as_str())
+            .and_then(|d| d.trim().parse::<u8>().ok())
+            .unwrap_or(3)
+            .clamp(1, 9);
+        let title = doc
+            .meta
+            .raw
+            .get("toc-title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| {
+                localised(
+                    self.lang.as_deref(),
+                    "Table of Contents",
+                    "Table des matières",
+                )
+                .into()
+            });
+        let mut entries = Vec::new();
+        for (i, block) in doc.blocks.iter().enumerate() {
+            if Some(i) != promoted {
+                collect_headings(block, depth, &mut entries);
+            }
+        }
+        let heading_style = self.style("TOCHeading");
+        let mut s = String::from(
+            "<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val=\"Table of Contents\"/>\
+             <w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtContent>",
+        );
+        s.push_str(&p_xml(Some(&heading_style), "", &plain_run(&title)));
+        let begin = format!(
+            "<w:r><w:fldChar w:fldCharType=\"begin\" w:dirty=\"true\"/></w:r>\
+             <w:r><w:instrText xml:space=\"preserve\"> TOC \\o \"1-{depth}\" \\h \\z \\u </w:instrText></w:r>\
+             <w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>"
+        );
+        let end = "<w:r><w:fldChar w:fldCharType=\"end\"/></w:r>";
+        if entries.is_empty() {
+            s.push_str(&p_xml(None, "", &format!("{begin}{end}")));
+        } else {
+            let last = entries.len() - 1;
+            for (i, (level, id, text)) in entries.iter().enumerate() {
+                let style = match level {
+                    1 => self.style("TOC1"),
+                    2 => self.style("TOC2"),
+                    _ => self.style("TOC3"),
+                };
+                let mut content = String::new();
+                if i == 0 {
+                    content.push_str(&begin);
                 }
+                content.push_str(&format!(
+                    "<w:hyperlink w:anchor=\"{}\" w:history=\"1\">{}</w:hyperlink>",
+                    escape_attr(id),
+                    plain_run(text)
+                ));
+                if i == last {
+                    content.push_str(end);
+                }
+                s.push_str(&p_xml(Some(&style), "", &content));
+            }
+        }
+        s.push_str("</w:sdtContent></w:sdt>");
+        self.out.push_str(&s);
+    }
+
+    // ---- Blocks ----
+
+    fn push_p(&mut self, style: &str, extra_ppr: &str, content: &str) {
+        let prefix = std::mem::take(&mut self.para_prefix);
+        let content = format!("{prefix}{content}");
+        self.out.push_str(&p_xml(
+            Some(style).filter(|s| !s.is_empty()),
+            extra_ppr,
+            &content,
+        ));
+    }
+
+    /// The style of an ordinary paragraph here.
+    fn body_style(&mut self) -> String {
+        if let Some(style) = &self.para_style {
+            return style.clone();
+        }
+        if std::mem::take(&mut self.first_para) {
+            self.style("FirstParagraph")
+        } else {
+            self.style("BodyText")
+        }
+    }
+
+    fn block(&mut self, block: &Block, depth: usize) {
+        match block {
+            Block::Heading {
+                level,
+                content,
+                attr,
+            } => {
+                let style = match level {
+                    1 => self.style("Heading1"),
+                    2 => self.style("Heading2"),
+                    3 => self.style("Heading3"),
+                    4 => self.style("Heading4"),
+                    5 => self.style("Heading5"),
+                    _ => self.style("Heading6"),
+                };
+                let inner = self.inlines(content, Fmt::default());
+                let content = self.bookmarked(attr.id.as_deref(), &inner);
+                self.push_p(&style, "", &content);
+                self.first_para = true;
             }
             Block::Paragraph(inlines) => {
-                let paragraph = self.paragraph(inlines, false, false, true);
-                self.push_paragraph(paragraph);
+                let style = self.body_style();
+                let content = self.inlines(inlines, Fmt::default());
+                self.push_p(&style, "", &content);
             }
-            // Mermaid stays readable source until the diagram renderer lands.
-            Block::CodeBlock { code, .. } | Block::Mermaid { code, .. } => {
-                self.write_code_block(code)
+            Block::Figure(image) => self.figure(image),
+            Block::CodeBlock { code, attr, .. } => self.code_block(code, attr),
+            Block::Mermaid { code, attr } => {
+                self.warn(
+                    "mermaid-not-rendered",
+                    "a Mermaid diagram is kept as its source code: md2star-rs has no Mermaid \
+                     renderer yet",
+                );
+                self.code_block(code, attr);
             }
-            Block::Figure(image) => {
-                let paragraph = self.paragraph(&[Inline::Image(image.clone())], false, false, true);
-                self.push_paragraph(paragraph);
-            }
-            Block::Div { content, .. } => {
-                for child in content {
-                    self.write_block(child, depth);
-                }
-            }
-            // Speaker notes belong to slides; raw HTML has no Word equivalent.
-            Block::Notes(_) | Block::RawHtml(_) => {}
-            // Block quotes: in reference mode, style their direct paragraphs with the template's
-            // "Quote" style; otherwise recurse plainly (no indent/border yet — a tracked follow-up).
             Block::BlockQuote(inner) => {
+                let style = self.style("BlockText");
+                let saved = self.para_style.replace(style);
                 for child in inner {
-                    if let (Block::Paragraph(inlines), Some(style)) =
-                        (child, self.style_for("Quote"))
-                    {
-                        let paragraph = self.paragraph(inlines, false, false, true).style(&style);
-                        self.push_paragraph(paragraph);
-                        continue;
-                    }
-                    self.write_block(child, depth);
+                    self.block(child, depth);
                 }
+                self.para_style = saved;
+                self.first_para = false;
             }
             Block::List {
                 ordered,
                 start,
                 items,
-            } => self.write_list(*ordered, *start, items, depth),
+            } => self.list(*ordered, *start, items, depth),
             Block::Table {
                 headers,
                 rows,
+                aligns,
                 caption,
-                ..
-            } => {
-                let table = self.table(headers, rows);
-                self.push_table(table);
-                if !caption.is_empty() {
-                    let paragraph = self.paragraph(caption, false, false, true);
-                    self.push_paragraph(paragraph);
+                attr,
+            } => self.table(headers, rows, aligns, caption, attr),
+            Block::Div { attr, content } => self.div(attr, content, depth),
+            // Speaker notes belong to slides; raw HTML has no Word equivalent.
+            Block::Notes(_) | Block::RawHtml(_) => {}
+            // md2star: `---` is a page break in a document.
+            Block::ThematicBreak => {
+                if !self.in_note {
+                    self.out
+                        .push_str("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
                 }
             }
-            Block::ThematicBreak => {
-                let paragraph = self.new_paragraph();
-                self.push_paragraph(paragraph.add_run(Run::new().add_text("————————————————")));
-            }
-            // Definitions are inlined at their reference; a stray one renders as text.
-            Block::FootnoteDef { label, .. } => {
-                let paragraph = self.new_paragraph();
-                self.push_paragraph(paragraph.add_run(Run::new().add_text(format!("[{label}]"))));
-            }
+            // Definitions are written where they are referenced.
+            Block::FootnoteDef { .. } => {}
         }
     }
 
-    /// Emit a list with **native Word numbering**.
-    ///
-    /// Ordered lists each get a fresh numbering instance (so they restart on their own
-    /// first number rather than continuing the previous list); bullet lists share one.
-    /// Nesting maps to the paragraph's indent level. Each item's first paragraph carries the
-    /// number/bullet; a nested list inside an item recurses one level deeper.
-    fn write_list(&mut self, ordered: bool, start: u64, items: &[ListItem], depth: usize) {
-        // Pick (or mint) the numbering instance for this list.
-        let num_id = if ordered {
-            let id = self.alloc_num_id();
-            // A list starting at 1 shares the one decimal definition. One starting anywhere
-            // else gets its own, because OOXML carries the first number on the abstract
-            // definition's level — `5. first` rendered as `1.` until 0.4.3 for want of this.
-            let start = usize::try_from(start).unwrap_or(1).max(1);
-            let abstract_id = if start == 1 {
-                self.decimal_abstract_id
-            } else {
-                let abstract_id = self.alloc_abstract_id();
-                self.register_abstract_numbering(decimal_abstract(abstract_id, start));
-                abstract_id
-            };
-            self.register_numbering(Numbering::new(id, abstract_id));
-            id
+    /// `<w:bookmarkStart/>content<w:bookmarkEnd/>` when `id` is a new bookmark name.
+    fn bookmarked(&mut self, id: Option<&str>, content: &str) -> String {
+        match id.filter(|id| !id.is_empty()) {
+            Some(name) if !self.in_note && self.bookmarks.insert(name.to_string()) => {
+                let n = self.next_bookmark;
+                self.next_bookmark += 1;
+                format!(
+                    "<w:bookmarkStart w:id=\"{n}\" w:name=\"{}\"/>{content}<w:bookmarkEnd w:id=\"{n}\"/>",
+                    escape_attr(name)
+                )
+            }
+            _ => content.to_string(),
+        }
+    }
+
+    fn code_block(&mut self, code: &str, attr: &Attr) {
+        let style = self.style("SourceCode");
+        let char_style = self.style("VerbatimChar");
+        let lines: Vec<String> = code
+            .trim_end_matches('\n')
+            .split('\n')
+            .map(|line| {
+                run_xml(
+                    line,
+                    &format!("<w:rStyle w:val=\"{}\"/>", escape_attr(&char_style)),
+                )
+            })
+            .collect();
+        let content = lines.join("<w:r><w:br/></w:r>");
+        let content = self.bookmarked(attr.id.as_deref(), &content);
+        self.push_p(&style, "", &content);
+        self.first_para = false;
+    }
+
+    fn figure(&mut self, image: &Image) {
+        let has_caption = !image.alt.is_empty();
+        let style = if has_caption {
+            self.style("CaptionedFigure")
         } else {
-            self.bullet_num_id
+            self.style("Figure")
+        };
+        let descr = image
+            .attr
+            .get("fig-alt")
+            .map(str::to_string)
+            .unwrap_or_else(|| image.alt_text());
+        let drawing = self.image(image, &descr);
+        let content = self.bookmarked(image.attr.id.as_deref(), &drawing);
+        // Centred, as md2star's post-processing centres standalone images.
+        self.push_p(&style, "<w:jc w:val=\"center\"/>", &content);
+        if has_caption {
+            let style = self.style("ImageCaption");
+            let caption = self.inlines(&image.alt, Fmt::default());
+            self.push_p(&style, "", &caption);
+        }
+        self.first_para = false;
+    }
+
+    fn list(&mut self, ordered: bool, start: u64, items: &[ListItem], depth: usize) {
+        let num = if ordered {
+            let start = usize::try_from(start).unwrap_or(1).max(1);
+            // OOXML puts the first number on the abstract definition: a list that does not
+            // start at 1 gets a definition of its own.
+            let abstract_id = if start == 1 {
+                self.decimal_abstract
+            } else {
+                let id = self.alloc_abstract();
+                self.abstract_nums
+                    .push_str(&list_definition(id, true, start));
+                id
+            };
+            self.alloc_num(abstract_id)
+        } else {
+            self.bullet_num
         };
         let level = depth.min(MAX_LEVEL);
-        // Word tags list items with its built-in "ListParagraph" style; apply it in reference
-        // mode so items pick up the template's list spacing/indent on top of our numbering.
-        let list_style = self.style_for("ListParagraph");
-
+        let compact = self.style("Compact");
+        let numbered =
+            format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{num}\"/></w:numPr>");
+        let continued = format!("<w:ind w:left=\"{}\"/>", 720 * (level + 1));
+        let saved = self.para_style.replace(compact.clone());
         for item in items {
-            // The item's first paragraph becomes the numbered line.
-            if let Some(Block::Paragraph(inlines)) = item
-                .content
-                .iter()
-                .find(|b| matches!(b, Block::Paragraph(_)))
-            {
-                let mut paragraph = self
-                    .new_paragraph()
-                    .numbering(NumberingId::new(num_id), IndentLevel::new(level));
-                if let Some(ref style) = list_style {
-                    paragraph = paragraph.style(style);
-                }
-                // A task item's box is its own run, ahead of the text: a glyph survives
-                // copy-paste, PDF export and plain-text extraction, a content control
-                // does not.
-                if let Some(checked) = item.task {
-                    paragraph = paragraph.add_run(styled(task_box(checked), false, false));
-                }
-                for run in self.inline_runs(inlines, false, false, true) {
-                    paragraph = paragraph.add_run(run);
-                }
-                self.push_paragraph(paragraph);
-            }
-            // Nested lists inside the item recurse one indent level deeper.
+            let mut first = true;
+            let task = item.task.map(|done| if done { "☒ " } else { "☐ " });
             for child in &item.content {
-                if let Block::List {
-                    ordered,
-                    start,
-                    items,
-                } = child
-                {
-                    self.write_list(*ordered, *start, items, depth + 1);
-                }
-            }
-        }
-    }
-
-    /// Emit a code block as one monospace paragraph per line so breaks survive.
-    ///
-    /// In reference mode, tag each line with the template's code style when it defines one —
-    /// `SourceCode` (Pandoc's own reference-doc convention) preferred, `HTMLPreformatted`
-    /// (Word's built-in) as a fallback — so code blocks inherit the template's code styling
-    /// (background, border, font). Absent both, we keep our plain monospace run.
-    fn write_code_block(&mut self, code: &str) {
-        // Resolve the code style once for the whole block (all lines share it).
-        let style = self
-            .style_for("SourceCode")
-            .or_else(|| self.style_for("HTMLPreformatted"));
-        // `lines()` drops a trailing newline; an empty block yields no paragraphs.
-        for line in code.lines() {
-            let mut paragraph = self.new_paragraph();
-            if let Some(ref style) = style {
-                paragraph = paragraph.style(style);
-            }
-            self.push_paragraph(paragraph.add_run(mono(line)));
-        }
-    }
-
-    /// Build a plain paragraph from inline content.
-    fn paragraph(
-        &mut self,
-        inlines: &[Inline],
-        bold: bool,
-        italic: bool,
-        footnotes: bool,
-    ) -> Paragraph {
-        let mut paragraph = self.new_paragraph();
-        for run in self.inline_runs(inlines, bold, italic, footnotes) {
-            paragraph = paragraph.add_run(run);
-        }
-        paragraph
-    }
-
-    /// Flatten an inline tree into `docx-rs` runs, threading emphasis flags through nesting.
-    ///
-    /// When `footnotes` is true, a [`Inline::FootnoteRef`] with a known definition becomes a
-    /// real Word footnote reference; otherwise (table cells, footnote bodies) it renders as
-    /// a `[label]` text marker, because `docx-rs` only collects footnotes from top-level
-    /// paragraphs and a marker there would otherwise orphan.
-    fn inline_runs(
-        &mut self,
-        inlines: &[Inline],
-        bold: bool,
-        italic: bool,
-        footnotes: bool,
-    ) -> Vec<Run> {
-        let mut out = Vec::new();
-        for inline in inlines {
-            match inline {
-                Inline::Text(t) => out.push(styled(t, bold, italic)),
-                // Nesting flips one flag and recurses; leaves become runs.
-                Inline::Emph(inner) => out.extend(self.inline_runs(inner, bold, true, footnotes)),
-                Inline::Strong(inner) => {
-                    out.extend(self.inline_runs(inner, true, italic, footnotes))
-                }
-                // Strikeout keeps its words; the styling is the DOCX port's to add.
-                Inline::Strikeout(inner) => {
-                    out.extend(self.inline_runs(inner, bold, italic, footnotes))
-                }
-                Inline::Superscript(inner) | Inline::Subscript(inner) => {
-                    let align = if matches!(inline, Inline::Superscript(_)) {
-                        VertAlignType::SuperScript
-                    } else {
-                        VertAlignType::SubScript
-                    };
-                    for mut run in self.inline_runs(inner, bold, italic, footnotes) {
-                        run.run_property = run.run_property.vert_align(align);
-                        out.push(run);
+                match child {
+                    Block::Paragraph(inlines) => {
+                        let mut content = String::new();
+                        if first {
+                            if let Some(task) = task {
+                                content.push_str(&plain_run(task));
+                            }
+                        }
+                        content.push_str(&self.inlines(inlines, Fmt::default()));
+                        let ppr = if first { &numbered } else { &continued };
+                        self.push_p(&compact, ppr, &content);
+                    }
+                    Block::List {
+                        ordered,
+                        start,
+                        items,
+                    } => {
+                        if first {
+                            self.push_p(&compact, &numbered, "");
+                        }
+                        self.list(*ordered, *start, items, depth + 1);
+                    }
+                    other => {
+                        if first {
+                            let content = task.map(plain_run).unwrap_or_default();
+                            self.push_p(&compact, &numbered, &content);
+                        }
+                        self.block(other, depth + 1);
                     }
                 }
-                Inline::Code(t) => out.push(mono(t)),
-                // Until OMML lands, a formula stays readable as its LaTeX source.
-                Inline::Math { display, tex } => {
-                    let fence = if *display { "$$" } else { "$" };
-                    out.push(styled(
-                        &format!("{fence}{}{fence}", tex.trim()),
-                        bold,
-                        italic,
-                    ))
-                }
-                // Until the bibliography lands, a citation reads as it was written.
-                Inline::Cite(cites) => out.push(styled(&cite_text(cites), bold, italic)),
-                Inline::InlineNote(content) => {
-                    out.push(self.inline_note_run(content, bold, italic, footnotes))
-                }
-                Inline::RawHtml(_) => {}
-                // v0.1: a link contributes only its (formatted) visible text.
-                Inline::Link { text, .. } => {
-                    out.extend(self.inline_runs(text, bold, italic, footnotes))
-                }
-                Inline::SoftBreak => out.push(styled(" ", bold, italic)),
-                Inline::HardBreak => {
-                    out.push(Run::new().add_break(docx_rs::BreakType::TextWrapping))
-                }
-                Inline::FootnoteRef(label) => {
-                    out.push(self.footnote_run(label, bold, italic, footnotes))
-                }
-                Inline::Image(image) => out.push(styled(
-                    &format!("[image: {}]", image.alt_text()),
-                    bold,
-                    italic,
-                )),
+                first = false;
+            }
+            if first {
+                // An empty item still shows its bullet.
+                self.push_p(&compact, &numbered, "");
             }
         }
-        out
+        self.para_style = saved;
+        self.first_para = false;
     }
 
-    /// Build the run for a footnote reference — a real Word footnote when possible.
-    fn footnote_run(&mut self, label: &str, bold: bool, italic: bool, footnotes: bool) -> Run {
-        // Clone the definition out first so the following `&mut self` calls don't overlap.
-        if footnotes {
-            if let Some(content) = self.footnote_defs.get(label).cloned() {
-                let id = self.alloc_footnote_id();
-                // Build the footnote with our own deterministic id via a struct literal —
-                // `Footnote::new()` would pull a non-reproducible process-global id instead.
-                let mut note = Footnote {
-                    id,
-                    content: Vec::new(),
-                };
-                for paragraph in self.footnote_content(&content) {
-                    note.add_content(paragraph);
-                }
-                return Run::new().add_footnote_reference(note);
-            }
-        }
-        // No live footnote (undefined label, or a cell/body context): fall back to a marker.
-        styled(&format!("[{label}]"), bold, italic)
-    }
-
-    /// Build the run for an inline note (`^[…]`): a real Word footnote when possible,
-    /// otherwise the note's text in parentheses.
-    fn inline_note_run(
+    fn table(
         &mut self,
-        content: &[Inline],
-        bold: bool,
-        italic: bool,
-        footnotes: bool,
-    ) -> Run {
-        if footnotes {
-            let id = self.alloc_footnote_id();
-            let mut note = Footnote {
-                id,
-                content: Vec::new(),
-            };
-            note.add_content(self.paragraph(content, false, false, false));
-            return Run::new().add_footnote_reference(note);
+        headers: &[Vec<Inline>],
+        rows: &[Vec<Vec<Inline>>],
+        aligns: &[Align],
+        caption: &[Inline],
+        attr: &Attr,
+    ) {
+        let ncols = headers
+            .len()
+            .max(rows.iter().map(Vec::len).max().unwrap_or(0));
+        if ncols == 0 {
+            return;
         }
-        styled(
-            &format!("({})", crate::ast::plain_text(content)),
-            bold,
-            italic,
+        if !caption.is_empty() {
+            let style = self.style("TableCaption");
+            let content = self.inlines(caption, Fmt::default());
+            let content = self.bookmarked(attr.id.as_deref(), &content);
+            self.push_p(&style, "", &content);
+        }
+        // md2star's rule: the small style for wide or wordy tables.
+        let chars: usize = headers
+            .iter()
+            .chain(rows.iter().flatten())
+            .map(|c| plain_text(c).chars().count())
+            .sum();
+        let table_style = if ncols >= 6 || chars > 800 {
+            self.style("MyTableSmall")
+        } else {
+            self.style("MyTable")
+        };
+        let col_twips = self.text_width_twips / ncols as u64;
+        let mut s = format!(
+            "<w:tbl><w:tblPr><w:tblStyle w:val=\"{}\"/><w:tblW w:w=\"5000\" w:type=\"pct\"/>\
+             <w:tblLook w:val=\"0020\" w:firstRow=\"1\" w:lastRow=\"0\" w:firstColumn=\"0\" \
+             w:lastColumn=\"0\" w:noHBand=\"0\" w:noVBand=\"0\"/>",
+            escape_attr(&table_style)
+        );
+        if !caption.is_empty() {
+            s.push_str(&format!(
+                "<w:tblCaption w:val=\"{}\"/>",
+                escape_attr(&plain_text(caption))
+            ));
+        }
+        s.push_str("</w:tblPr><w:tblGrid>");
+        for _ in 0..ncols {
+            s.push_str(&format!("<w:gridCol w:w=\"{col_twips}\"/>"));
+        }
+        s.push_str("</w:tblGrid>");
+        let compact = self.style("Compact");
+        let (box_width, box_height) = (self.box_width, self.box_height);
+        self.box_width = col_twips * EMU_PER_TWIP;
+        let saved = self.para_style.replace(compact.clone());
+        let has_header = headers.iter().any(|h| !h.is_empty());
+        let write_row = |w: &mut Self, cells: &[Vec<Inline>], header: bool| {
+            let mut row = String::from("<w:tr>");
+            if header {
+                row.push_str("<w:trPr><w:tblHeader/></w:trPr>");
+            }
+            for i in 0..ncols {
+                let jc = match aligns.get(i).copied().unwrap_or_default() {
+                    Align::Left => "<w:jc w:val=\"left\"/>",
+                    Align::Center => "<w:jc w:val=\"center\"/>",
+                    Align::Right => "<w:jc w:val=\"right\"/>",
+                    Align::Default => "",
+                };
+                let fmt = Fmt {
+                    bold: header,
+                    ..Fmt::default()
+                };
+                let content = cells.get(i).map(|c| w.inlines(c, fmt)).unwrap_or_default();
+                row.push_str(&format!(
+                    "<w:tc><w:tcPr><w:tcW w:w=\"{col_twips}\" w:type=\"dxa\"/></w:tcPr>{}</w:tc>",
+                    p_xml(Some(&compact), jc, &content)
+                ));
+            }
+            row.push_str("</w:tr>");
+            row
+        };
+        if has_header {
+            let row = write_row(self, headers, true);
+            s.push_str(&row);
+        }
+        for cells in rows {
+            let row = write_row(self, cells, false);
+            s.push_str(&row);
+        }
+        s.push_str("</w:tbl>");
+        self.para_style = saved;
+        self.box_width = box_width;
+        self.box_height = box_height;
+        self.out.push_str(&s);
+        self.first_para = false;
+    }
+
+    fn div(&mut self, attr: &Attr, content: &[Block], depth: usize) {
+        let custom = attr.get("custom-style").map(str::to_string);
+        let saved = match custom {
+            Some(name) => {
+                let style = self.styles.custom(&name);
+                Some(self.para_style.replace(style))
+            }
+            None => None,
+        };
+        let bookmark = attr
+            .id
+            .as_deref()
+            .filter(|id| !id.is_empty() && !self.in_note && !self.bookmarks.contains(*id))
+            .map(str::to_string);
+        let n = self.next_bookmark;
+        if let Some(name) = &bookmark {
+            self.bookmarks.insert(name.clone());
+            self.next_bookmark += 1;
+            self.out.push_str(&format!(
+                "<w:bookmarkStart w:id=\"{n}\" w:name=\"{}\"/>",
+                escape_attr(name)
+            ));
+        }
+        for child in content {
+            self.block(child, depth);
+        }
+        if bookmark.is_some() {
+            self.out.push_str(&format!("<w:bookmarkEnd w:id=\"{n}\"/>"));
+        }
+        if let Some(saved) = saved {
+            self.para_style = saved;
+        }
+    }
+
+    // ---- Inlines ----
+
+    fn text_run(&mut self, text: &str, fmt: Fmt) -> String {
+        let mut rpr = String::new();
+        if fmt.code {
+            let s = self.style("VerbatimChar");
+            rpr.push_str(&format!("<w:rStyle w:val=\"{}\"/>", escape_attr(&s)));
+        } else if fmt.link {
+            let s = self.style("Hyperlink");
+            rpr.push_str(&format!("<w:rStyle w:val=\"{}\"/>", escape_attr(&s)));
+        }
+        if fmt.bold {
+            rpr.push_str("<w:b/><w:bCs/>");
+        }
+        if fmt.italic {
+            rpr.push_str("<w:i/><w:iCs/>");
+        }
+        if fmt.strike {
+            rpr.push_str("<w:strike/>");
+        }
+        if fmt.sup {
+            rpr.push_str("<w:vertAlign w:val=\"superscript\"/>");
+        } else if fmt.sub {
+            rpr.push_str("<w:vertAlign w:val=\"subscript\"/>");
+        }
+        run_xml(text, &rpr)
+    }
+
+    fn inlines(&mut self, inlines: &[Inline], fmt: Fmt) -> String {
+        let mut s = String::new();
+        for inline in inlines {
+            match inline {
+                Inline::Text(t) => s.push_str(&self.text_run(t, fmt)),
+                Inline::Emph(inner) => s.push_str(&self.inlines(
+                    inner,
+                    Fmt {
+                        italic: true,
+                        ..fmt
+                    },
+                )),
+                Inline::Strong(inner) => {
+                    s.push_str(&self.inlines(inner, Fmt { bold: true, ..fmt }))
+                }
+                Inline::Strikeout(inner) => s.push_str(&self.inlines(
+                    inner,
+                    Fmt {
+                        strike: true,
+                        ..fmt
+                    },
+                )),
+                Inline::Superscript(inner) => s.push_str(&self.inlines(
+                    inner,
+                    Fmt {
+                        sup: true,
+                        sub: false,
+                        ..fmt
+                    },
+                )),
+                Inline::Subscript(inner) => s.push_str(&self.inlines(
+                    inner,
+                    Fmt {
+                        sub: true,
+                        sup: false,
+                        ..fmt
+                    },
+                )),
+                Inline::Code(t) => s.push_str(&self.text_run(t, Fmt { code: true, ..fmt })),
+                Inline::Math { display, tex } => {
+                    let out = math::convert(tex, *display);
+                    self.warnings.extend(out.warnings);
+                    s.push_str(&out.xml);
+                }
+                Inline::Link {
+                    text, url, title, ..
+                } => s.push_str(&self.link(text, url, title.as_deref(), fmt)),
+                Inline::Image(image) => {
+                    let descr = image.alt_text();
+                    s.push_str(&self.image(image, &descr));
+                }
+                // Unresolved (no bibliography): as written, as Pandoc without citeproc.
+                Inline::Cite(cites) => s.push_str(&self.text_run(&cite_text(cites), fmt)),
+                Inline::FootnoteRef(label) => match self.footnote_defs.get(label).cloned() {
+                    Some(content) if !self.in_note => s.push_str(&self.footnote(&content)),
+                    _ => s.push_str(&self.text_run(&format!("[^{label}]"), fmt)),
+                },
+                Inline::InlineNote(content) => {
+                    if self.in_note {
+                        let text = format!("({})", plain_text(content));
+                        s.push_str(&self.text_run(&text, fmt));
+                    } else {
+                        s.push_str(&self.footnote(&[Block::Paragraph(content.clone())]));
+                    }
+                }
+                Inline::RawHtml(html) => {
+                    let tag = html.trim().to_ascii_lowercase();
+                    if matches!(tag.as_str(), "<br>" | "<br/>" | "<br />") {
+                        s.push_str("<w:r><w:br/></w:r>");
+                    }
+                }
+                Inline::SoftBreak => s.push_str(&self.text_run(" ", fmt)),
+                Inline::HardBreak => s.push_str("<w:r><w:br/></w:r>"),
+            }
+        }
+        s
+    }
+
+    fn link(&mut self, text: &[Inline], url: &str, title: Option<&str>, fmt: Fmt) -> String {
+        if fmt.link || url.is_empty() {
+            return self.inlines(text, fmt);
+        }
+        let inner = self.inlines(text, Fmt { link: true, ..fmt });
+        let tooltip = title
+            .filter(|t| !t.is_empty())
+            .map(|t| format!(" w:tooltip=\"{}\"", escape_attr(t)))
+            .unwrap_or_default();
+        if let Some(anchor) = url.strip_prefix('#') {
+            return format!(
+                "<w:hyperlink w:anchor=\"{}\"{tooltip} w:history=\"1\">{inner}</w:hyperlink>",
+                escape_attr(anchor)
+            );
+        }
+        let rid = self.rels().add(package::rel_type::HYPERLINK, url, true);
+        format!("<w:hyperlink r:id=\"{rid}\"{tooltip} w:history=\"1\">{inner}</w:hyperlink>")
+    }
+
+    /// A Word footnote holding `blocks`; returns the reference run.
+    fn footnote(&mut self, blocks: &[Block]) -> String {
+        let id = self.next_footnote;
+        self.next_footnote += 1;
+        let note_style = self.style("FootnoteText");
+        let ref_style = self.style("FootnoteReference");
+        let saved_out = std::mem::take(&mut self.out);
+        let saved_style = self.para_style.replace(note_style.clone());
+        let saved_first = self.first_para;
+        self.in_note = true;
+        self.para_prefix = format!(
+            "<w:r><w:rPr><w:rStyle w:val=\"{}\"/></w:rPr><w:footnoteRef/></w:r>{}",
+            escape_attr(&ref_style),
+            run_xml(" ", "")
+        );
+        for block in blocks {
+            self.block(block, 0);
+        }
+        if !self.para_prefix.is_empty() {
+            // Nothing was written: the note still needs its paragraph and number.
+            self.push_p(&note_style, "", "");
+        }
+        self.in_note = false;
+        self.para_style = saved_style;
+        self.first_para = saved_first;
+        let body = std::mem::replace(&mut self.out, saved_out);
+        self.footnotes
+            .push(format!("<w:footnote w:id=\"{id}\">{body}</w:footnote>"));
+        format!(
+            "<w:r><w:rPr><w:rStyle w:val=\"{}\"/></w:rPr><w:footnoteReference w:id=\"{id}\"/></w:r>",
+            escape_attr(&ref_style)
         )
     }
 
-    /// Render a footnote definition's blocks into paragraphs for `footnotes.xml`.
-    ///
-    /// Footnotes here are rendered without *nested* footnotes (`footnotes = false`), which
-    /// keeps ids linear and avoids a footnote-inside-a-footnote edge case.
-    fn footnote_content(&mut self, blocks: &[Block]) -> Vec<Paragraph> {
-        let mut paragraphs = Vec::new();
-        for block in blocks {
-            if let Block::Paragraph(inlines) = block {
-                paragraphs.push(self.paragraph(inlines, false, false, false));
+    /// The run that shows `image`, or its alt text with a warning when it cannot be
+    /// embedded.
+    fn image(&mut self, image: &Image, descr: &str) -> String {
+        let fallback = |w: &mut Self, why: String| {
+            w.warn(
+                "image-not-embedded",
+                format!("image `{}` not embedded: {why}", short(&image.src)),
+            );
+            let text = if descr.is_empty() {
+                image.src.clone()
+            } else {
+                descr.to_string()
+            };
+            w.text_run(
+                &format!("[{text}]"),
+                Fmt {
+                    italic: true,
+                    ..Fmt::default()
+                },
+            )
+        };
+        if is_remote(&image.src) && !self.resolver.allow_remote {
+            return fallback(
+                self,
+                "remote images are off (pass --allow-remote-images)".into(),
+            );
+        }
+        let loaded = match self.resolver.load_image(&image.src) {
+            Ok(l) => l,
+            Err(e) => return fallback(self, e.to_string()),
+        };
+        let prepared = match images::prepare(&loaded) {
+            Ok(p) => p,
+            Err(why) => return fallback(self, why),
+        };
+        if prepared.placeholder {
+            self.warn(
+                "svg-without-fallback",
+                format!(
+                    "SVG `{}` is embedded without a raster fallback (md2star-rs built without \
+                     the `svg` feature): Word 2016+ shows it, older readers show an empty frame",
+                    short(&image.src)
+                ),
+            );
+        }
+        let (cx, cy) = fit_emu(&loaded.info, &image.attr, self.box_width, self.box_height);
+        let target = self.media.store(prepared.raster, prepared.ext);
+        let rid = self.rels().add(package::rel_type::IMAGE, &target, false);
+        let svg_rid = prepared.svg.map(|svg| {
+            let target = self.media.store(svg, "svg");
+            self.rels().add(package::rel_type::IMAGE, &target, false)
+        });
+        let id = self.next_drawing;
+        self.next_drawing += 1;
+        let name = if image.src.starts_with("data:") {
+            "data URI"
+        } else {
+            image.src.as_str()
+        };
+        images::drawing_run(&images::Drawing {
+            rid: &rid,
+            svg_rid: svg_rid.as_deref(),
+            cx,
+            cy,
+            id,
+            descr,
+            title: image.title.as_deref().unwrap_or(""),
+            name,
+        })
+    }
+
+    // ---- Packaging ----
+
+    fn finish(self, base: &Base, doc: &Document, lang: Option<&str>) -> Output {
+        let document = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<w:document {NAMESPACES}><w:body>{}{}</w:body></w:document>",
+            self.out, base.sect_pr
+        );
+        let (sep, cont) = self.separators;
+        let mut footnotes = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<w:footnotes {NAMESPACES}>\
+             <w:footnote w:type=\"separator\" w:id=\"{sep}\"><w:p><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr><w:r><w:separator/></w:r></w:p></w:footnote>\
+             <w:footnote w:type=\"continuationSeparator\" w:id=\"{cont}\"><w:p><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>"
+        );
+        for note in &self.footnotes {
+            footnotes.push_str(note);
+        }
+        footnotes.push_str("</w:footnotes>");
+        let styles = self.styles.inject(&base.styles);
+        let numbering =
+            package::merge_numbering(base.numbering.as_deref(), &self.abstract_nums, &self.nums);
+        let meta = &doc.meta;
+        let authors: Vec<String> = match &self.options.author {
+            Some(a) => a
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            None => meta.authors.clone(),
+        };
+        let title = meta.title.clone().or_else(|| {
+            doc.blocks
+                .iter()
+                .find(|b| is_title_candidate(b))
+                .and_then(|b| match b {
+                    Block::Heading { content, .. } => Some(plain_text(content)),
+                    _ => None,
+                })
+        });
+        let core = package::core_properties(
+            title.as_deref(),
+            meta.subtitle.as_deref(),
+            &authors,
+            &meta.keywords,
+            meta.abstract_text.as_deref(),
+            lang,
+        );
+        Output {
+            document,
+            footnotes,
+            doc_rels: self.doc_rels,
+            foot_rels: self.foot_rels,
+            media: self.media.into_parts(),
+            styles,
+            numbering,
+            core,
+        }
+    }
+}
+
+/// The namespaces every part we write declares.
+const NAMESPACES: &str =
+    "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" \
+xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" \
+xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\" \
+xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" \
+xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" \
+xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" \
+xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" \
+xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\" \
+xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\" \
+xmlns:wp14=\"http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing\" \
+mc:Ignorable=\"w14 w15 wp14\"";
+
+/// `<w:p>` with a style, extra paragraph properties (already in schema order: `numPr`,
+/// `ind`, `jc`) and content.
+fn p_xml(style: Option<&str>, extra_ppr: &str, content: &str) -> String {
+    let mut ppr = String::new();
+    if let Some(style) = style {
+        ppr.push_str(&format!("<w:pStyle w:val=\"{}\"/>", escape_attr(style)));
+    }
+    ppr.push_str(extra_ppr);
+    if ppr.is_empty() {
+        format!("<w:p>{content}</w:p>")
+    } else {
+        format!("<w:p><w:pPr>{ppr}</w:pPr>{content}</w:p>")
+    }
+}
+
+/// A run of text with run properties (tabs become `<w:tab/>`).
+fn run_xml(text: &str, rpr: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let rpr = if rpr.is_empty() {
+        String::new()
+    } else {
+        format!("<w:rPr>{rpr}</w:rPr>")
+    };
+    let mut body = String::new();
+    for (i, piece) in text.split('\t').enumerate() {
+        if i > 0 {
+            body.push_str("<w:tab/>");
+        }
+        if !piece.is_empty() {
+            body.push_str(&format!(
+                "<w:t xml:space=\"preserve\">{}</w:t>",
+                escape_text(piece)
+            ));
+        }
+    }
+    format!("<w:r>{rpr}{body}</w:r>")
+}
+
+fn plain_run(text: &str) -> String {
+    run_xml(text, "")
+}
+
+/// A list definition: nine levels of bullets (`•`, `◦`, `▪`) or of decimals (each level
+/// numbered on its own, `1.`), indented 0.5 in per level with a hanging marker.
+fn list_definition(id: usize, ordered: bool, start: usize) -> String {
+    let mut s = format!(
+        "<w:abstractNum w:abstractNumId=\"{id}\"><w:multiLevelType w:val=\"hybridMultilevel\"/>"
+    );
+    for level in 0..=MAX_LEVEL {
+        let (fmt, text) = if ordered {
+            ("decimal", format!("%{}.", level + 1))
+        } else {
+            (
+                "bullet",
+                match level % 3 {
+                    0 => "•",
+                    1 => "◦",
+                    _ => "▪",
+                }
+                .to_string(),
+            )
+        };
+        s.push_str(&format!(
+            "<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"{}\"/><w:numFmt w:val=\"{fmt}\"/>\
+             <w:lvlText w:val=\"{text}\"/><w:lvlJc w:val=\"left\"/>\
+             <w:pPr><w:ind w:left=\"{}\" w:hanging=\"360\"/></w:pPr></w:lvl>",
+            if level == 0 { start } else { 1 },
+            720 * (level + 1)
+        ));
+    }
+    s.push_str("</w:abstractNum>");
+    s
+}
+
+/// Front-matter text read as Markdown inlines (`title: "A *bold* claim"`).
+fn inline_markdown(text: &str) -> Vec<Inline> {
+    match crate::reader::parse(text).into_iter().next() {
+        Some(Block::Paragraph(inlines)) => inlines,
+        _ => vec![Inline::Text(text.to_string())],
+    }
+}
+
+/// A level-1 heading md2star may promote to the title (never the bibliography's).
+fn is_title_candidate(block: &Block) -> bool {
+    matches!(block, Block::Heading { level: 1, attr, .. } if !attr.has_class("bibliography-heading"))
+}
+
+/// md2star's author line: `A`, `A and B`, `A, B and C` (the conjunction in the
+/// document's language).
+fn join_authors(authors: &[String], lang: Option<&str>) -> String {
+    let conj = match lang
+        .and_then(|l| l.split(['-', '_']).next())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("fr") => "et",
+        Some("es") => "y",
+        Some("de") => "und",
+        Some("it" | "pt") => "e",
+        Some("nl") => "en",
+        Some("ru") => "и",
+        _ => "and",
+    };
+    match authors {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} {conj} {last}", init.join(", ")),
+    }
+}
+
+fn localised(lang: Option<&str>, en: &'static str, fr: &'static str) -> &'static str {
+    if lang.is_some_and(|l| l.to_ascii_lowercase().starts_with("fr")) {
+        fr
+    } else {
+        en
+    }
+}
+
+fn collect_footnote_defs(blocks: &[Block], out: &mut HashMap<String, Vec<Block>>) {
+    for block in blocks {
+        match block {
+            Block::FootnoteDef { label, content } => {
+                out.entry(label.clone()).or_insert_with(|| content.clone());
+            }
+            Block::Div { content, .. } | Block::BlockQuote(content) => {
+                collect_footnote_defs(content, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Headings for the table of contents: (level, id, text).
+fn collect_headings(block: &Block, depth: u8, out: &mut Vec<(u8, String, String)>) {
+    match block {
+        Block::Heading {
+            level,
+            content,
+            attr,
+        } if *level <= depth => {
+            if let Some(id) = attr.id.as_deref().filter(|id| !id.is_empty()) {
+                out.push((*level, id.to_string(), plain_text(content)));
             }
         }
-        // A footnote must have at least one paragraph or Word complains; guarantee one.
-        if paragraphs.is_empty() {
-            paragraphs.push(self.new_paragraph());
+        Block::Div { content, .. } => {
+            for child in content {
+                collect_headings(child, depth, out);
+            }
         }
-        paragraphs
-    }
-
-    /// Build a `docx-rs` [`Table`] from header + body cells.
-    fn table(&mut self, headers: &[Vec<Inline>], rows: &[Vec<Vec<Inline>>]) -> Table {
-        let mut table_rows = Vec::new();
-
-        // Header row is bold to read like a GFM header. Cells use plain (marker) footnotes.
-        let header_cells: Vec<TableCell> = headers
-            .iter()
-            .map(|cell| TableCell::new().add_paragraph(self.paragraph(cell, true, false, false)))
-            .collect();
-        table_rows.push(TableRow::new(header_cells));
-
-        for row in rows {
-            let cells: Vec<TableCell> = row
-                .iter()
-                .map(|cell| {
-                    TableCell::new().add_paragraph(self.paragraph(cell, false, false, false))
-                })
-                .collect();
-            table_rows.push(TableRow::new(cells));
-        }
-
-        Table::new(table_rows)
+        _ => {}
     }
 }
 
-// Free helpers below don't need writer state.
-
-/// One past the highest `abstractNumId`/`numId` a template already declares — the offset that
-/// keeps our added numbering definitions from colliding with the template's. Zero for an empty
-/// (no-template) document, which is why the default writer starts its ids at 0.
-fn numbering_base(template: &Docx) -> usize {
-    let abstract_max = template.numberings.abstract_nums.iter().map(|n| n.id).max();
-    let num_max = template.numberings.numberings.iter().map(|n| n.id).max();
-    // `chain` folds both maxima together; `+ 1` lands on the first free id above all of them —
-    // but never below `DOCX_RS_RESERVED_ID + 1`, see that constant.
-    abstract_max
-        .into_iter()
-        .chain(num_max)
-        .max()
-        .map_or(0, |m| m + 1)
-        .max(DOCX_RS_RESERVED_ID + 1)
-}
-
-/// Build the abstract numbering for bullet lists: nine levels of alternating glyphs.
-fn bullet_abstract(id: usize) -> AbstractNumbering {
-    let mut abstract_num = AbstractNumbering::new(id);
-    for level in 0..=MAX_LEVEL {
-        // Cycle filled/hollow/square bullets so nested levels read differently.
-        let glyph = match level % 3 {
-            0 => "●",
-            1 => "○",
-            _ => "▪",
-        };
-        abstract_num = abstract_num.add_level(indented_level(
-            level,
-            1,
-            NumberFormat::new("bullet"),
-            LevelText::new(glyph),
-        ));
-    }
-    abstract_num
-}
-
-/// Build the abstract numbering for ordered lists: nine decimal levels (`%1.`, `%2.`, …).
-fn decimal_abstract(id: usize, start: usize) -> AbstractNumbering {
-    let mut abstract_num = AbstractNumbering::new(id);
-    for level in 0..=MAX_LEVEL {
-        // `%N` references the counter of the Nth level, so each depth prints its own number.
-        let text = format!("%{}.", level + 1);
-        abstract_num = abstract_num.add_level(indented_level(
-            level,
-            start,
-            NumberFormat::new("decimal"),
-            LevelText::new(text),
-        ));
-    }
-    abstract_num
-}
-
-/// A single numbering level with a hanging indent that grows with depth.
-fn indented_level(level: usize, start: usize, format: NumberFormat, text: LevelText) -> Level {
-    // 720 twips (~0.5in) of indent per level, with a 360-twip hanging indent for the marker.
-    let left = 720 * (level as i32 + 1);
-    Level::new(level, Start::new(start), format, text, LevelJc::new("left")).indent(
-        Some(left),
-        Some(SpecialIndentType::Hanging(360)),
-        None,
-        None,
-    )
-}
-
-/// Half-point font size for a heading level (`size()` is in half-points, so 40 → 20pt).
-fn heading_half_points(level: u8) -> usize {
-    match level {
-        1 => 40,
-        2 => 32,
-        3 => 28,
-        4 => 26,
-        5 => 24,
-        _ => 22,
-    }
-}
-
-/// A text run with the requested emphasis applied.
-fn styled(text: &str, bold: bool, italic: bool) -> Run {
-    let mut run = Run::new().add_text(text);
-    if bold {
-        run = run.bold();
-    }
-    if italic {
-        run = run.italic();
-    }
-    run
-}
-
-/// The box a task-list item opens with.
-fn task_box(checked: bool) -> &'static str {
-    if checked {
-        "\u{2611} "
+/// A reference shortened for a message (`data:` URIs are long).
+fn short(src: &str) -> String {
+    if src.chars().count() > 60 {
+        format!("{}…", src.chars().take(60).collect::<String>())
     } else {
-        "\u{2610} "
+        src.to_string()
     }
-}
-
-/// A monospace run for inline code / code-block lines.
-fn mono(text: &str) -> Run {
-    Run::new()
-        .add_text(text)
-        .fonts(RunFonts::new().ascii(MONO_FONT).hi_ansi(MONO_FONT))
 }

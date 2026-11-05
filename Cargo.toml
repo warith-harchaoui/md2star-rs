@@ -50,7 +50,7 @@ required-features = ["cli"]
 [features]
 # On by default so `cargo install md2star-rs` still yields the three binaries.
 # Library consumers turn it off with `default-features = false`.
-default = ["cli", "legacy-pptx"]
+default = ["cli", "legacy-pptx", "svg"]
 cli = ["dep:clap"]
 # The v0.4 PPTX writer on ppt-rs (src/pptx/legacy.rs). ppt-rs pulls zip 0.6 with its
 # default features, which compile bzip2 and zstd from C: that C is what a pure-Rust core
@@ -58,6 +58,9 @@ cli = ["dep:clap"]
 # replaces it with a pure-Rust PresentationML writer. `--no-default-features` builds
 # without it (and PPTX output then answers "not ported yet").
 legacy-pptx = ["dep:ppt-rs"]
+# SVG images in DOCX get the PNG fallback Word requires, rasterised in process by resvg
+# (pure Rust). Without it an SVG is embedded behind a transparent placeholder.
+svg = ["dep:resvg"]
 # In-process PDF output (src/pdf.rs). The twin + PDF port adds its renderer here.
 pdf = []
 # Fetch `http(s)://` images (still opt-in per conversion: --allow-remote-images).
@@ -115,6 +118,10 @@ ureq = { version = "3", optional = true }
 
 # --- phase 2: each port appends its own dependencies below its marker, nowhere else ---
 # DOCX port:
+# SVG → PNG for the raster fallback Word needs under an SVG picture (feature `svg`). Pure
+# Rust (usvg + tiny-skia); no system fonts from memory maps, no compressed `.svgz`, no
+# raster images embedded inside SVGs: what diagrams in documents need, nothing else.
+resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts"], optional = true }
 # PPTX port:
 # twin + PDF port:
 
