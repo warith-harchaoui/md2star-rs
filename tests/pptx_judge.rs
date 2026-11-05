@@ -226,10 +226,13 @@ mod http {
         let again = md2star_rs::convert(MD, md2star_rs::Format::Pptx, &o).unwrap();
         assert_eq!(again.bytes, out.bytes);
         assert_eq!(seen.lock().unwrap().len(), 1);
-        let cached: Vec<_> = std::fs::read_dir(cache.path().join("layout-verdicts"))
+        // (AppleDouble `._*` files an exFAT volume adds are not verdicts.)
+        let cached: Vec<String> = std::fs::read_dir(cache.path().join("layout-verdicts"))
             .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with("._"))
             .collect();
-        assert_eq!(cached.len(), 1);
+        assert_eq!(cached.len(), 1, "{cached:?}");
 
         // A model answering nonsense: a warning, and the deterministic choice.
         let (bad, _) = serve("I would rather not say.");

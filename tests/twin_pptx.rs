@@ -298,7 +298,6 @@ fn python_reference_footnotes_come_back_as_footnotes() {
     assert!(!md.contains("# Notes"), "{md}");
 }
 
-#[cfg(feature = "legacy-pptx")]
 #[test]
 fn round_trip_through_md2star_rs_pptx() {
     let source = "# First\n\n- a\n- b\n  - c\n\n# Second\n\n1. x\n2. y\n";
