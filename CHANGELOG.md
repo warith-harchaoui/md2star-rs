@@ -67,6 +67,26 @@ that the core builds for iOS and Android.
   `\mathcal`/`\text`/`\operatorname`, Greek letters, operators, relations and
   arrows, written as the same OMML structures Pandoc writes. An unknown command
   stays readable in the equation and raises a warning; nothing fails.
+- **`twin`: DOCX and PPTX back to editable Markdown, as pure XML over the zip**
+  (`md2star_rs::twin`, `md2star-rs twin`). From a `.docx`: the front matter
+  (Title, Subtitle, Author, Date paragraphs and `docProps/core.xml`), headings
+  by style name, `basedOn` chain or outline level, bold / italic / code /
+  strikeout / superscript / subscript runs, bullet and numbered lists with
+  their levels and start numbers from `numbering.xml`, pipe tables with
+  alignment and merged cells, hyperlinks (relationships, anchors and
+  `HYPERLINK` fields), footnotes and endnotes as `[^n]`, block quotes, code
+  blocks, figure and table captions, task boxes, OMML equations back to LaTeX
+  (`twin::omml_to_latex`: fractions, scripts, roots, n-ary operators,
+  delimiters, matrices, accents, bars, functions, limits, braces; an unknown
+  element keeps its text and warns). From a `.pptx`: the cover as front matter,
+  one section per slide (`#` for section slides), bullets and numbered lists
+  with levels, code, tables, pictures, two-column bodies, speaker notes as
+  `::: notes`, `---` between slides, and Pandoc's footnote slide folded back
+  into `[^n]`. Pictures are extracted to `<name>_media/` and linked relatively;
+  `--no-images` leaves them out. Charts and SmartArt are reported, not
+  invented. A PDF is refused with the reason (no OCR on every device). Tested
+  by round trips Markdown → md2star-rs → twin → Markdown, against md2star's
+  own `.docx`/`.pptx`, and LaTeX → OMML → LaTeX over the converter above.
 
 ### Changed
 

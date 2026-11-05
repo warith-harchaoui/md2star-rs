@@ -49,9 +49,15 @@ pub fn run(args: &TwinArgs) -> Result<()> {
         }
     };
     let bytes = fs::read(&args.input)?;
+    let stem = args
+        .input
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "twin".into());
+    // Media go to `<stem>_media/`, next to `<stem>.md`, and are linked relatively.
     let options = TwinOptions {
         images: !args.no_images,
-        ..TwinOptions::default()
+        media_dir: format!("{stem}_media"),
     };
     let twin = crate::twin::to_markdown(&bytes, kind, &options)?;
     let dir = args
@@ -66,11 +72,6 @@ pub fn run(args: &TwinArgs) -> Result<()> {
         }
         fs::write(target, data)?;
     }
-    let stem = args
-        .input
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "twin".into());
     let output = dir.join(format!("{stem}.md"));
     fs::write(&output, &twin.markdown)?;
     report_warnings(&twin.warnings, args.verbosity);

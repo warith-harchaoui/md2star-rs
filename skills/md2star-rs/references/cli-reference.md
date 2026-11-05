@@ -49,13 +49,32 @@ Deck flags: `--template PATH` (wins over `--reference-doc`), `--min-pt N`,
 The full port of md2star is in progress. A flag that is accepted but not
 honoured yet (`--bib`, `--toc`, a deck's `--reference-doc`/`--template`,
 `--min-pt`, `--smart-layout`) produces a warning on stderr naming it; the
-conversion still runs. A subcommand that is not ported yet (`pdf`, `twin`,
-`audit`, `templates`) exits non-zero with `not ported yet: …`. Nothing is
+conversion still runs. A subcommand that is not ported yet (`audit`,
+`templates`) exits non-zero with `not ported yet: …`. Nothing is
 ignored silently.
 
 Pandoc pass-through flags, `--skip-phase`, `--lint` and
 `--no-remote-templates` do not apply to an in-process converter with no Pandoc
 and no remote templates, and are not offered.
+
+## `twin` — a document back to Markdown
+
+```
+md2star-rs twin report.docx              # → report.md + report_media/
+md2star-rs twin deck.pptx --out notes/   # → notes/deck.md + notes/deck_media/
+md2star-rs twin report.docx --no-images  # prose and tables only
+```
+
+The Markdown is written next to the input (or into `--out`) as `<stem>.md`;
+pictures go to `<stem>_media/` and are linked relatively. It reads the XML
+inside the file, so it works on any `.docx` / `.pptx`, not only those
+md2star wrote: Word styles and outline levels give the headings,
+`numbering.xml` the lists, the relationships the links and pictures; a deck
+gives one section per slide with its notes as `::: notes`. Equations come back
+as LaTeX. What has no Markdown form (a chart, SmartArt, an unknown equation
+element) is reported on stderr, never invented. A `.pdf` is refused: reading
+one back needs text extraction with layout analysis and OCR, which md2star-rs
+does not carry.
 
 ## Output contract
 
