@@ -88,6 +88,9 @@ struct Seg {
     baseline: i32,
     code: bool,
     link: Option<String>,
+    /// An equation: its OMML, written as `a14:m` (Pandoc's form, which PowerPoint
+    /// edits as a native equation); `text` keeps the LaTeX for measuring.
+    math: Option<String>,
 }
 
 fn segs(inlines: &[Inline], style: &Seg, footnotes: &BTreeMap<String, usize>, out: &mut Vec<Seg>) {
@@ -103,9 +106,10 @@ fn segs(inlines: &[Inline], style: &Seg, footnotes: &BTreeMap<String, usize>, ou
                 s.code = true;
                 out.push(s);
             }
-            Inline::Math { tex, .. } => {
+            Inline::Math { tex, display } => {
+                let omml = crate::docx::math::convert(tex, *display).xml;
                 s.text = tex.clone();
-                s.italic = true;
+                s.math = Some(declare_math_ns(&omml));
                 out.push(s);
             }
             Inline::Emph(i) => {
@@ -269,6 +273,33 @@ fn runs_xml(segments: &[Seg], breaks: &[usize], st: &RunStyle, rels: &mut Rels) 
     let mut out = String::new();
     let mut offset = 0usize;
     for seg in segments {
+        if let Some(omml) = &seg.math {
+            offset += seg.text.len();
+            // Sentinels [with_math] resolves: the equation for PowerPoint, its LaTeX as
+            // an italic run for readers without the extension (LibreOffice).
+            // Each math run carries the paragraph's size, as PowerPoint writes it.
+            let omml = omml.replace(
+                "<m:t>",
+                &format!(
+                    "<a:rPr lang=\"{}\"{} dirty=\"0\"/><m:t>",
+                    esc(st.lang),
+                    st.sz.map(|z| format!(" sz=\"{z}\"")).unwrap_or_default()
+                ),
+            );
+            out.push_str(&format!(
+                "\u{1}{omml}\u{2}<a:r>{}<a:t>{}</a:t></a:r>\u{3}",
+                rpr(
+                    &Seg {
+                        italic: true,
+                        ..seg.clone()
+                    },
+                    st,
+                    rels
+                ),
+                esc(&seg.text)
+            ));
+            continue;
+        }
         let mut buf = String::new();
         let flush = |buf: &mut String, out: &mut String, rels: &mut Rels| {
             if !buf.is_empty() {
@@ -408,6 +439,47 @@ fn para_xml(
 
 // ── shapes ──────────────────────────────────────────────────────────────────
 
+/// The OMML fragment with `xmlns:m` declared on its root element (`m:oMath` or
+/// `m:oMathPara`), so it stands alone inside `a14:m`.
+fn declare_math_ns(omml: &str) -> String {
+    let Some(start) = omml.find("<m:") else {
+        return omml.to_string();
+    };
+    let name_end = omml[start + 1..]
+        .find([' ', '>', '/'])
+        .map_or(omml.len(), |i| start + 1 + i);
+    format!(
+        "{} xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"{}",
+        &omml[..name_end],
+        &omml[name_end..]
+    )
+}
+
+/// A shape holding an equation goes inside `mc:AlternateContent`, as Pandoc writes it
+/// (`a14:m` belongs to the Office 2010 drawing extensions), with a fallback where each
+/// equation is its LaTeX in italics, for readers without the extension.
+fn with_math(shape: String) -> String {
+    if !shape.contains('\u{1}') {
+        return shape;
+    }
+    let (mut choice, mut fallback) = (String::new(), String::new());
+    let mut rest = shape.as_str();
+    while let Some(a) = rest.find('\u{1}') {
+        let b = rest[a..].find('\u{2}').map_or(rest.len(), |i| a + i);
+        let c = rest[b..].find('\u{3}').map_or(rest.len(), |i| b + i);
+        choice.push_str(&rest[..a]);
+        fallback.push_str(&rest[..a]);
+        choice.push_str(&format!("<a14:m>{}</a14:m>", &rest[a + 1..b]));
+        fallback.push_str(&rest[(b + 1).min(c)..c]);
+        rest = &rest[(c + 1).min(rest.len())..];
+    }
+    choice.push_str(rest);
+    fallback.push_str(rest);
+    format!(
+        "<mc:AlternateContent xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"><mc:Choice xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" Requires=\"a14\">{choice}</mc:Choice><mc:Fallback>{fallback}</mc:Fallback></mc:AlternateContent>"
+    )
+}
+
 fn xfrm(f: (i64, i64, i64, i64)) -> String {
     format!(
         "<a:xfrm><a:off x=\"{}\" y=\"{}\"/><a:ext cx=\"{}\" cy=\"{}\"/></a:xfrm>",
@@ -507,11 +579,11 @@ impl SlideWriter<'_> {
                 body.push_str(&para_xml(p, &pc, self.input.footnotes, &mut self.rels));
             }
         }
-        self.shapes.push_str(&format!(
+        self.shapes.push_str(&with_math(format!(
             "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{}\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr>{}</p:nvPr></p:nvSpPr>{sppr}<p:txBody>{body_pr}<a:lstStyle/>{body}</p:txBody></p:sp>",
             esc(&name),
             ph_tag(ph)
-        ));
+        )));
     }
 
     fn free_text(
@@ -551,11 +623,11 @@ impl SlideWriter<'_> {
             body.push_str(&para_xml(p, &pc, self.input.footnotes, &mut self.rels));
         }
         let anchor = if center { "ctr" } else { "t" };
-        self.shapes.push_str(&format!(
+        self.shapes.push_str(&with_math(format!(
             "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{}\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr><p:spPr>{}<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/></p:spPr><p:txBody><a:bodyPr wrap=\"square\" lIns=\"91440\" tIns=\"45720\" rIns=\"91440\" bIns=\"45720\" anchor=\"{anchor}\"><a:noAutofit/></a:bodyPr><a:lstStyle/>{body}</p:txBody></p:sp>",
             esc(&name),
             xfrm(frame)
-        ));
+        )));
     }
 
     fn code(&mut self, frame: (i64, i64, i64, i64), lines: &[String]) {
@@ -1346,6 +1418,18 @@ mod tests {
         assert!(xml.contains("<a:t>alpha</a:t></a:r><a:br>"), "{xml}");
         assert!(xml.contains("<a:t>beta </a:t>"), "{xml}");
         assert!(xml.contains("b=\"1\""), "{xml}");
+    }
+
+    #[test]
+    fn the_math_namespace_lands_on_the_root_element() {
+        assert_eq!(
+            declare_math_ns("<m:oMathPara><m:oMath/></m:oMathPara>"),
+            "<m:oMathPara xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"><m:oMath/></m:oMathPara>"
+        );
+        assert!(
+            crate::pptx::xml::parse(declare_math_ns("<m:oMath><m:r/></m:oMath>").as_bytes())
+                .is_ok()
+        );
     }
 
     #[test]

@@ -294,3 +294,46 @@ fn every_byte_is_the_same_on_every_run() {
     let d = convert(&deck_md(), Format::Pptx, &min).unwrap().bytes;
     assert_eq!(c, d);
 }
+
+#[cfg(feature = "mermaid")]
+#[test]
+fn a_mermaid_diagram_is_drawn_as_a_picture() {
+    let md = "## Flow\n\n```mermaid\nflowchart LR\n  A --> B\n```\n";
+    let out = convert(md, Format::Pptx, &Options::default()).unwrap();
+    let deck = Deck::open(&out.bytes);
+    assert!(deck.slide(1).contains("svgBlip"));
+    assert!(!out
+        .warnings
+        .iter()
+        .any(|w| w.code == "mermaid-not-rendered"));
+}
+
+#[cfg(not(feature = "mermaid"))]
+#[test]
+fn without_the_feature_a_mermaid_diagram_stays_readable_code() {
+    let md = "## Flow\n\n```mermaid\nflowchart LR\n  A --> B\n```\n";
+    let out = convert(md, Format::Pptx, &Options::default()).unwrap();
+    assert!(Deck::open(&out.bytes).slide(1).contains(">flowchart LR<"));
+    assert!(out
+        .warnings
+        .iter()
+        .any(|w| w.code == "mermaid-not-rendered"));
+}
+
+#[test]
+fn equations_are_native_omml_inside_a14() {
+    let md = "## Math\n\nEnergy is $E=mc^2$.\n\n$$\\frac{a}{b}$$\n";
+    let out = convert(md, Format::Pptx, &Options::default()).unwrap();
+    let s = Deck::open(&out.bytes).slide(1);
+    assert!(s.contains("<mc:AlternateContent"), "{s}");
+    assert!(s.contains("Requires=\"a14\""));
+    assert!(s.contains(
+        "<a14:m><m:oMath xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\">"
+    ));
+    assert!(s.contains("<a14:m><m:oMathPara xmlns:m="));
+    assert!(s.contains("<m:f>"));
+    assert!(s.contains("<mc:Fallback>") && s.contains(">E=mc^2<"));
+    // The audit still sees the shape the equation sits in.
+    let report = audit(&out.bytes, &AuditOptions::default()).unwrap();
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+}

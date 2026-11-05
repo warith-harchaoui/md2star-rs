@@ -201,7 +201,8 @@ fn a_picture_over_text_is_an_overlap() {
 /// --min-pt 30 --json` reports (md2star 3.12), slide by slide and shape by shape.
 #[test]
 fn pandoc_decks_get_md2stars_findings() {
-    let expected: [(&str, &[(usize, &str, &str)]); 2] = [
+    type Expected<'a> = (&'a str, &'a [(usize, &'a str, &'a str)]);
+    let expected: [Expected; 2] = [
         (
             "with_bib.pptx",
             &[

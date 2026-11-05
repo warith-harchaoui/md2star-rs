@@ -43,6 +43,7 @@ fn every_deck_opens_in_libreoffice_with_one_page_per_slide() {
         ("syntax", None),
         ("comprehensive_presentation", Some(30.0)),
         ("images", None),
+        ("math", None),
         ("table_zoo", Some(30.0)),
     ] {
         let md = std::fs::read_to_string(fixtures.join(format!("{name}.md"))).unwrap();

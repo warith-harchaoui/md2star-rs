@@ -354,6 +354,14 @@ impl Affine {
 fn collect(tree: &[&Node], affine: Affine, styles: &Styles, layout: &Node, out: &mut Vec<Seen>) {
     for shape in tree {
         match shape.local() {
+            // An Office-2010 extension (an equation): read the shape the producer
+            // meant, the first choice.
+            "AlternateContent" => {
+                if let Some(choice) = shape.children.iter().find(|c| c.local() == "Choice") {
+                    let kids: Vec<&Node> = choice.children.iter().collect();
+                    collect(&kids, affine, styles, layout, out);
+                }
+            }
             "grpSp" => {
                 let inner = affine.then_group(shape);
                 let kids: Vec<&Node> = shape.children.iter().collect();
@@ -428,6 +436,30 @@ fn collect(tree: &[&Node], affine: Affine, styles: &Styles, layout: &Node, out: 
                                     text.push_str(&t);
                                 }
                                 "br" => text.push('\n'),
+                                // An equation (`a14:m`): its characters count as text, at
+                                // the paragraph's size.
+                                "m" => {
+                                    let t: String = r
+                                        .descendants("t")
+                                        .iter()
+                                        .map(|t| t.text.as_str())
+                                        .collect();
+                                    if !t.trim().is_empty() {
+                                        let own = r
+                                            .descendants("rPr")
+                                            .iter()
+                                            .filter_map(|x| x.attr("sz"))
+                                            .filter_map(|v| v.parse::<u32>().ok())
+                                            .map(|v| v as f32 / 100.0)
+                                            .fold(None, |m: Option<f32>, v| {
+                                                Some(m.map_or(v, |m| m.min(v)))
+                                            });
+                                        sizes.push(
+                                            own.or(para_sz).unwrap_or_else(|| size_at(level)),
+                                        );
+                                    }
+                                    text.push_str(&t);
+                                }
                                 _ => {}
                             }
                         }

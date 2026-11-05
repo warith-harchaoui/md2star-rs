@@ -303,7 +303,11 @@ fn words_of(doc: &md2star_rs::Document) -> Vec<String> {
                         walk(&it.content, out);
                     }
                 }
-                Block::CodeBlock { code, .. } | Block::Mermaid { code, .. } => {
+                Block::CodeBlock { code, .. } => {
+                    out.extend(code.split_whitespace().map(str::to_string))
+                }
+                // Drawn as a picture with the `mermaid` feature, kept as source without.
+                Block::Mermaid { code, .. } if cfg!(not(feature = "mermaid")) => {
                     out.extend(code.split_whitespace().map(str::to_string))
                 }
                 Block::Table { headers, rows, .. } => {
