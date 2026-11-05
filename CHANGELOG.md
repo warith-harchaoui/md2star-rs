@@ -4,6 +4,63 @@ All notable changes to `md2star-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+The foundation of the full port of md2star: one reader and one AST every backend
+shares, the module layout the DOCX, PPTX and twin/PDF ports fill in, and the proof
+that the core builds for iOS and Android.
+
+### Added
+
+- **A reader that keeps everything md2star's Markdown says.** `reader::read`
+  returns a `Document`: YAML front matter (typed fields — title, subtitle,
+  authors, date, lang, bibliography, csl, citation style, reference-section
+  title, toc, keywords, `md2star_skip` — plus the whole map as `MetaValue`),
+  Pandoc attributes `{#id .class key="v"}` on headings, code blocks, divs,
+  images, links and table captions, automatic heading identifiers, images with
+  source, alt, title and attributes, implicit figures, footnotes and inline
+  notes `^[…]`, inline and display math with the raw LaTeX, math written in a
+  code span (md2star's rule), citations `[see @key, p. 3; -@other]` and
+  in-text `@key [p. 3]`, superscript and subscript (also inside a word:
+  `2^10^`, `H~2~O`), strikeout, table alignments and `Table:` captions, task
+  lists as item state, fenced divs `:::` (nested, with attributes), speaker
+  notes `::: notes`, Mermaid blocks, raw HTML. The reader never fails;
+  malformed input degrades to text and leaves a `Warning`.
+- **`resources`**: resolve an image (relative path, absolute path, `file://`,
+  `data:` URI, remote URL behind the new `net` feature and an explicit opt-in),
+  identify it from its bytes (PNG, JPEG, GIF, BMP, TIFF, WebP, ICO, SVG), read
+  its pixel size without decoding it, and fit it to a box in EMU honouring
+  `width=` / `height=`.
+- **`convert(markdown, Format, &Options) -> Rendered`**: one entry point for
+  every format, with warnings returned beside the bytes instead of printed.
+- **The CLI tree of the Python md2star**: `md2star-rs docx | pptx | pdf | twin
+  | audit | templates`, with its conversion flags (`--author`, `--bib`,
+  `--bibliography-name`, `--citation-style`, `--lang`, `--date`,
+  `--reference-doc`, `--toc`, `--offline`, `--allow-remote-images`, `-v`,
+  `-q`; for decks `--template`, `--min-pt`, `--smart-layout`). `md2docx` and
+  `md2pptx` are the same commands under their old names. A flag that is not
+  honoured yet warns; a subcommand that is not ported yet exits with
+  `not ported yet: …`.
+- **Cargo features** `pdf`, `net`, `llm`, and `legacy-pptx` (default).
+- **Shared fixtures** in `tests/fixtures/`: a document using every
+  construction, a deck exercising layout hints, md2star's own fixtures and
+  examples, PNG/JPEG/SVG images, two `.bib`, md2star's `.docx`/`.pptx`
+  templates, and Pandoc-made reference outputs to compare against.
+- **Cross-device proof in CI and in the pre-push hook**: `cargo check --lib
+  --no-default-features` for `aarch64-apple-ios` and `aarch64-linux-android`.
+
+### Changed
+
+- The DOCX writer moved to `md2star_rs::docx` (`md2star_rs::writer` remains as
+  a deprecated alias). Superscript and subscript are real vertical alignment,
+  inline notes are real Word footnotes, a table caption follows its table, and
+  speaker notes stay out of the document.
+- The `ppt-rs` writer moved behind the default feature `legacy-pptx`. ppt-rs
+  pulls `zip` 0.6 with bzip2 and zstd compiled from C; that C is what kept the
+  core from building for iOS and Android. Our own `zip` is now deflate-only.
+- `Error` is `#[non_exhaustive]` and gains `Unsupported`, `Resource`, `Bib`,
+  `Math`, `Pdf`, `Read` and `Llm`.
+
 ## [0.4.4] — 2026-10-19
 
 ### Fixed

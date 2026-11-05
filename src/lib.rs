@@ -1,51 +1,111 @@
-//! `md2star-rs` — a pure-Rust Markdown → DOCX / PPTX writer, no Pandoc, no subprocess.
+//! `md2star-rs` — Markdown → DOCX / PPTX / PDF and back, in pure Rust: no Pandoc, no
+//! LibreOffice, no subprocess, no network unless asked.
 //!
-//! Module summary
-//! --------------
-//! The Python `md2star` is a thin wrapper around Pandoc. This crate keeps the same goal —
-//! Markdown in, a faithful Office document out — but reaches it entirely in Rust, so it
-//! compiles to a single static binary that runs on any OS/device with no Pandoc install:
+//! The Python `md2star` wraps Pandoc. This crate reaches the same goal in process, so the
+//! core compiles for iOS and Android (`cargo check --lib --no-default-features --target
+//! aarch64-apple-ios`) as well as to a single static binary:
 //!
 //! ```text
-//!                                       ┌──▶ writer   (AST → docx-rs) ──▶ .docx
-//! Markdown ──▶ reader (→ AST) ──────────┤
-//!                                       └──▶ pptx     (AST → ppt-rs)  ──▶ .pptx
+//!                                                   ┌──▶ docx  ──▶ .docx
+//! Markdown ──▶ reader ──▶ ast::Document ──(bib)─────┼──▶ pptx  ──▶ .pptx
+//!                │                                  └──▶ pdf   ──▶ .pdf   (feature `pdf`)
+//!                └── resources (images: path, data URI, URL with feature `net`)
+//!
+//! .docx / .pptx ──▶ twin ──▶ Markdown          .pptx ──▶ audit ──▶ findings
 //! ```
 //!
-//! The named AST in the middle ([`ast`]) is the reader/writer seam Pandoc uses internally;
-//! it is what lets a second backend ([`pptx`], and later Typst/HTML) slot in **without
-//! touching the reader**. See `README.md` for the exact scope and the (deliberate) limitations
-//! versus the Pandoc-backed original.
+//! # Module map and ownership
+//!
+//! | Module | Role | Owner |
+//! |---|---|---|
+//! | [`ast`], [`reader`], [`resources`], [`options`], [`error`], `cli/mod.rs` | the shared foundation | phase 1 (frozen) |
+//! | [`docx`] (+ `math`, `citations`, `images`), [`bib`], `cli/docx.rs` | Word output, LaTeX → OMML, BibTeX | DOCX port |
+//! | [`pptx`] (+ `layout`, `template`, `images`), [`audit`], [`templates`], `llm`, `cli/{pptx,audit,templates}.rs` | PowerPoint output, deck audit | PPTX port |
+//! | [`twin`] (+ `docx`, `pptx`), `pdf`, `cli/{twin,pdf}.rs` | Office → Markdown, PDF output | twin + PDF port |
+//!
+//! Every function that is not ported yet returns [`Error::Unsupported`], never panics.
+//!
+//! # Cargo features
+//!
+//! - `cli` (default): the `md2star-rs`, `md2docx` and `md2pptx` binaries.
+//! - `pdf`: in-process PDF output.
+//! - `net`: fetch `http(s)://` images (still opt-in per conversion).
+//! - `llm`: model-assisted layout selection through an OpenAI-compatible endpoint.
 //!
 //! # Examples
 //!
-//! ```no_run
-//! use std::path::Path;
-//! // Convert a Markdown string straight to a .docx on disk...
-//! md2star_rs::markdown_to_docx_file("# Hi\n\nHello.", Path::new("out.docx")).unwrap();
-//! // ...or to a .pptx deck (each `#` heading becomes a slide).
-//! md2star_rs::markdown_to_pptx_file("# Slide 1\n\n- point", Path::new("out.pptx")).unwrap();
+//! ```
+//! use md2star_rs::{convert, Format, Options};
+//!
+//! let out = convert("# Hi\n\nHello.", Format::Docx, &Options::default()).unwrap();
+//! assert_eq!(&out.bytes[..2], b"PK"); // a .docx is a zip
+//! assert!(out.warnings.is_empty());
 //! ```
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 use std::fs;
-use std::io::Cursor;
 use std::path::Path;
 
 pub mod ast;
+pub mod audit;
+pub mod bib;
+pub mod docx;
 pub mod error;
+pub mod options;
 pub mod pptx;
 pub mod reader;
-pub mod writer;
+pub mod resources;
+pub mod templates;
+pub mod twin;
 
+#[cfg(feature = "cli")]
+pub mod cli;
+#[cfg(feature = "llm")]
+pub mod llm;
+#[cfg(feature = "pdf")]
+pub mod pdf;
+
+pub use ast::Document;
 pub use error::{Error, Result};
+pub use options::{Format, Options, Rendered};
+
+/// The DOCX writer's v0.4 name, kept so existing callers still compile.
+#[deprecated(since = "0.5.0", note = "the DOCX writer moved to `md2star_rs::docx`")]
+pub mod writer {
+    pub use crate::docx::{build, build_with_reference};
+}
+
+/// Convert Markdown to `format`, in memory.
+///
+/// # Errors
+///
+/// Whatever the backend reports; [`Error::Unsupported`] for a backend that is not
+/// ported yet or not compiled in (PDF without the `pdf` feature).
+pub fn convert(markdown: &str, format: Format, options: &Options) -> Result<Rendered> {
+    render(&reader::read(markdown), format, options)
+}
+
+/// Render an already-parsed document to `format`.
+///
+/// # Errors
+///
+/// See [`convert`].
+pub fn render(doc: &Document, format: Format, options: &Options) -> Result<Rendered> {
+    match format {
+        Format::Docx => docx::render(doc, options),
+        Format::Pptx => pptx::render(doc, options),
+        #[cfg(feature = "pdf")]
+        Format::Pdf => pdf::render(doc, options),
+        #[cfg(not(feature = "pdf"))]
+        Format::Pdf => Err(Error::unsupported(
+            "PDF output: this build of md2star-rs was compiled without the `pdf` feature",
+        )),
+    }
+}
 
 /// Convert a Markdown string to `.docx` bytes in memory.
-///
-/// Useful for tests, servers, and a future WASM entry point where writing to disk isn't
-/// wanted. The bytes are a complete, valid OOXML zip.
 ///
 /// # Examples
 ///
@@ -55,15 +115,14 @@ pub use error::{Error, Result};
 /// assert_eq!(&bytes[..2], b"PK");
 /// ```
 pub fn markdown_to_docx_bytes(markdown: &str) -> Result<Vec<u8>> {
-    pack(writer::build(&reader::parse(markdown)))
+    docx::pack(docx::build(&reader::parse(markdown)))
 }
 
 /// Convert Markdown to `.docx` bytes, inheriting styling from a reference `template` `.docx`.
 ///
-/// This is the in-memory core of the `--reference-doc` feature (Pandoc parity): the template's
-/// styles, theme, fonts and page setup are kept, its body content is dropped, and headings /
-/// block quotes are emitted through the template's named styles (`Heading1`…`Heading6`, `Quote`)
-/// when present. `template_docx` is the raw bytes of a `.docx` to read the styling from.
+/// The template's styles, theme, fonts and page setup are kept, its body content is
+/// dropped, and headings / block quotes / code / list items are emitted through the
+/// template's named styles when present.
 ///
 /// # Errors
 ///
@@ -73,29 +132,14 @@ pub fn markdown_to_docx_bytes_with_reference(
     markdown: &str,
     template_docx: &[u8],
 ) -> Result<Vec<u8>> {
-    // Read the template back into a `Docx` so we can start from its styles and section setup.
     let template = docx_rs::read_docx(template_docx).map_err(|e| Error::Template(e.to_string()))?;
-    pack(writer::build_with_reference(
+    docx::pack(docx::build_with_reference(
         &reader::parse(markdown),
         template,
     ))
 }
 
-/// Pack a built [`docx_rs::Docx`] into raw `.docx` bytes.
-///
-/// Shared by the plain and reference-doc paths: `docx-rs` packs into any `Write + Seek`, so an
-/// in-memory cursor hands us a complete, valid OOXML zip.
-fn pack(docx: docx_rs::Docx) -> Result<Vec<u8>> {
-    let mut buffer = Cursor::new(Vec::new());
-    docx.build()
-        .pack(&mut buffer)
-        .map_err(|e| Error::Docx(e.to_string()))?;
-    Ok(buffer.into_inner())
-}
-
 /// Convert a Markdown string and write the resulting `.docx` to `output`.
-///
-/// Parent directories are assumed to exist; only the file itself is created/truncated.
 ///
 /// # Examples
 ///
@@ -104,17 +148,12 @@ fn pack(docx: docx_rs::Docx) -> Result<Vec<u8>> {
 /// md2star_rs::markdown_to_docx_file("# Title", Path::new("title.docx")).unwrap();
 /// ```
 pub fn markdown_to_docx_file(markdown: &str, output: &Path) -> Result<()> {
-    // Reuse the in-memory path, then commit the bytes in one write — this keeps the
-    // "build" and "persist" concerns separate and makes partial-file states unlikely.
     let bytes = markdown_to_docx_bytes(markdown)?;
     fs::write(output, bytes)?;
     Ok(())
 }
 
 /// Read a Markdown file and write the converted `.docx` to `output`.
-///
-/// The convenience the CLI is built on: it wires the filesystem read to
-/// [`markdown_to_docx_file`] so the binary stays a thin argument-parsing shell.
 pub fn convert_path(input: &Path, output: &Path) -> Result<()> {
     let markdown = fs::read_to_string(input)?;
     markdown_to_docx_file(&markdown, output)
@@ -122,17 +161,12 @@ pub fn convert_path(input: &Path, output: &Path) -> Result<()> {
 
 /// Read a Markdown file and write the converted `.docx` to `output`, styled after `reference`.
 ///
-/// The `--reference-doc` counterpart of [`convert_path`]: `reference` is the path to a `.docx`
-/// whose styles, theme, fonts and page setup the output inherits. See
-/// [`markdown_to_docx_bytes_with_reference`] for the styling semantics.
-///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if `input` or `reference` cannot be read or `output` cannot be written,
 /// [`Error::Template`] if `reference` is not a valid `.docx`, or [`Error::Docx`] on a pack failure.
 pub fn convert_path_with_reference(input: &Path, output: &Path, reference: &Path) -> Result<()> {
     let markdown = fs::read_to_string(input)?;
-    // The reference is a binary `.docx`, so read it as bytes (not UTF-8 text).
     let template = fs::read(reference)?;
     let bytes = markdown_to_docx_bytes_with_reference(&markdown, &template)?;
     fs::write(output, bytes)?;
@@ -141,9 +175,6 @@ pub fn convert_path_with_reference(input: &Path, output: &Path, reference: &Path
 
 /// Convert a Markdown string to `.pptx` bytes in memory.
 ///
-/// Each level-1 heading (`#`) starts a new slide; the body until the next `#` becomes that
-/// slide's bullet points. See [`pptx`] for the full Markdown-to-slides mapping.
-///
 /// # Errors
 ///
 /// Returns [`Error::Pptx`] if the presentation cannot be assembled or packed.
@@ -151,17 +182,16 @@ pub fn convert_path_with_reference(input: &Path, output: &Path, reference: &Path
 /// # Examples
 ///
 /// ```
+/// # #[cfg(feature = "legacy-pptx")] {
 /// let bytes = md2star_rs::markdown_to_pptx_bytes("# Title\n\n- one\n- two").unwrap();
-/// // A .pptx is a zip, so it starts with the local-file-header magic `PK`.
 /// assert_eq!(&bytes[..2], b"PK");
+/// # }
 /// ```
 pub fn markdown_to_pptx_bytes(markdown: &str) -> Result<Vec<u8>> {
     pptx::build(&reader::parse(markdown))
 }
 
 /// Convert a Markdown string and write the resulting `.pptx` to `output`.
-///
-/// Parent directories are assumed to exist; only the file itself is created/truncated.
 ///
 /// # Examples
 ///
@@ -176,8 +206,6 @@ pub fn markdown_to_pptx_file(markdown: &str, output: &Path) -> Result<()> {
 }
 
 /// Read a Markdown file and write the converted `.pptx` to `output`.
-///
-/// The `.pptx` counterpart of [`convert_path`]; the `md2pptx` binary is a thin shell over it.
 pub fn convert_path_to_pptx(input: &Path, output: &Path) -> Result<()> {
     let markdown = fs::read_to_string(input)?;
     markdown_to_pptx_file(&markdown, output)

@@ -1,43 +1,103 @@
-//! DOCX writer: our [`Block`]/[`Inline`] AST → a `docx-rs` [`Docx`].
+//! DOCX writer: [`Document`] → `.docx` bytes, through `docx-rs`.
 //!
-//! This is the half that replaces Pandoc's OOXML writer. Because we build every run and
-//! paragraph ourselves, we *own* the output — there is no post-hoc `styles.xml` surgery
-//! (the reason the Python md2star ships `postprocess.py`).
+//! # What this module must do (phase 2: the DOCX port)
 //!
-//! Two entry points: [`build`] emits our own default styling; [`build_with_reference`]
-//! inherits styles/theme/fonts/page-setup from a reference `.docx` template (Pandoc's
-//! `--reference-doc`) and routes headings (`Heading1`…`Heading6`), block quotes (`Quote`),
-//! code blocks (`SourceCode`/`HTMLPreformatted`) and list items (`ListParagraph`) through the
-//! template's named styles when present, falling back to inline formatting otherwise.
+//! Reach parity with `md2star docx`, in process and in pure Rust: images embedded at
+//! their real aspect ratio and scaled to the page ([`images`], fed by
+//! [`crate::resources`]), real hyperlinks (relationships, not just the visible text),
+//! native OMML equations from the raw LaTeX in [`Inline::Math`] ([`math`]), citations
+//! and a bibliography from a `.bib` ([`citations`], built on [`crate::bib`]), a table of
+//! contents, figure and table captions, and `--reference-doc` (already here).
 //!
-//! Since v0.2 the writer is stateful (a `Writer`) so it can emit two features that need
-//! document-level bookkeeping:
-//! - **Native Word list numbering** — real `numbering.xml` levels + `numPr` on paragraphs,
-//!   not a glyph typed into the text. Each ordered list gets its own numbering instance so
-//!   it restarts at 1; nesting maps to indent levels.
-//! - **Real Word footnotes** — `Run::add_footnote_reference`, which `docx-rs` collects into
-//!   `word/footnotes.xml`, instead of an inline `[n]` marker plus a trailing section.
+//! # Files this module owns
 //!
-//! Determinism / idempotence: both footnote ids *and* paragraph ids (`w14:paraId`) come from
-//! our own per-document counters — not `docx-rs`'s process-global atomics — and no timestamps
-//! are written, so the same Markdown yields byte-identical `.docx` output on every run, even
-//! when conversions run concurrently on multiple threads. See `Writer::new_paragraph` and
-//! `tests/convert.rs`.
+//! `src/docx/mod.rs` (this writer), `src/docx/math.rs`, `src/docx/citations.rs`,
+//! `src/docx/images.rs`, the whole of `src/bib/`, `src/cli/docx.rs`, and the
+//! `tests/docx_*.rs` integration tests. [`math::latex_to_omml`] is also the one LaTeX →
+//! OMML converter the PPTX writer calls (PowerPoint reads the same OMML).
 //!
-//! Remaining v0.1 limitations still open (tracked follow-ups): links/images render
-//! text/alt only; block quotes recurse without an indent/border; footnote references
-//! inside table cells fall back to a text marker (`docx-rs` only collects footnotes from
-//! top-level document paragraphs).
+//! # State at the end of phase 1
+//!
+//! The v0.4 writer below, adapted to the full AST: headings route through the reference
+//! template's named styles; native list numbering; real Word footnotes (inline notes
+//! included); task-list boxes. Math, citations and images still render as text, and the
+//! entry point [`render`] warns about every option it does not honour yet.
+//!
+//! # Determinism
+//!
+//! Footnote ids *and* paragraph ids (`w14:paraId`) come from our own per-document
+//! counters — not `docx-rs`'s process-global atomics — and no timestamps are written, so
+//! the same Markdown yields byte-identical `.docx` output on every run, even when
+//! conversions run concurrently. Every paragraph must be minted by
+//! `Writer::new_paragraph`.
+
+pub mod citations;
+pub mod images;
+pub mod math;
 
 use std::collections::{HashMap, HashSet};
+
+use std::io::Cursor;
 
 use docx_rs::{
     AbstractNumbering, Docx, Footnote, IndentLevel, Level, LevelJc, LevelText, NumberFormat,
     Numbering, NumberingId, Paragraph, Run, RunFonts, SpecialIndentType, Start, Table, TableCell,
-    TableRow,
+    TableRow, VertAlignType,
 };
 
-use crate::ast::{Block, Inline};
+use crate::ast::{cite_text, Block, Document, Inline, ListItem, Warning};
+use crate::error::{Error, Result};
+use crate::options::{Options, Rendered};
+
+/// Convert a parsed document to `.docx` bytes.
+///
+/// The entry point every caller (the library API, the CLI) goes through. Options this
+/// writer does not honour yet produce a `not-yet-ported` warning rather than being
+/// ignored silently.
+///
+/// # Errors
+///
+/// [`Error::Template`] when `options.reference_doc` is not a readable `.docx`;
+/// [`Error::Docx`] when packing fails.
+pub fn render(doc: &Document, options: &Options) -> Result<Rendered> {
+    let mut warnings = doc.warnings.clone();
+    let mut unported = |what: &str| {
+        warnings.push(Warning::new(
+            "not-yet-ported",
+            format!("DOCX: {what} is not ported to md2star-rs yet and was ignored"),
+        ));
+    };
+    if !options.bibliography.is_empty() || !doc.meta.bibliography.is_empty() {
+        unported("the bibliography (--bib)");
+    }
+    if options.toc || doc.meta.toc == Some(true) {
+        unported("the table of contents (--toc)");
+    }
+    let docx = match &options.reference_doc {
+        Some(bytes) => {
+            let template = docx_rs::read_docx(bytes).map_err(|e| Error::Template(e.to_string()))?;
+            build_with_reference(&doc.blocks, template)
+        }
+        None => build(&doc.blocks),
+    };
+    Ok(Rendered {
+        bytes: pack(docx)?,
+        warnings,
+    })
+}
+
+/// Pack a built [`Docx`] into raw `.docx` bytes (`docx-rs` packs into any `Write + Seek`).
+///
+/// # Errors
+///
+/// [`Error::Docx`] when `docx-rs` fails to serialise or zip the document.
+pub fn pack(docx: Docx) -> Result<Vec<u8>> {
+    let mut buffer = Cursor::new(Vec::new());
+    docx.build()
+        .pack(&mut buffer)
+        .map_err(|e| Error::Docx(e.to_string()))?;
+    Ok(buffer.into_inner())
+}
 
 /// Font used for inline code and code blocks.
 const MONO_FONT: &str = "Consolas";
@@ -61,7 +121,7 @@ const MAX_HEADING_STYLE: u8 = 6;
 /// Footnote *definitions* are indexed up front and pulled in at each reference site, so a
 /// definition may sit anywhere in the source relative to its reference(s).
 pub fn build(blocks: &[Block]) -> Docx {
-    render(Writer::new(), blocks)
+    render_blocks(Writer::new(), blocks)
 }
 
 /// Build a [`Docx`] whose styles, theme, fonts and page setup are inherited from a reference
@@ -73,7 +133,7 @@ pub fn build(blocks: &[Block]) -> Docx {
 /// those styles exist, falling back to our inline formatting when they don't — so a document
 /// converted against a house template comes out looking like that template.
 pub fn build_with_reference(blocks: &[Block], template: Docx) -> Docx {
-    render(Writer::with_reference(template), blocks)
+    render_blocks(Writer::with_reference(template), blocks)
 }
 
 /// Shared render loop: index footnote definitions, then emit every non-definition block.
@@ -81,7 +141,7 @@ pub fn build_with_reference(blocks: &[Block], template: Docx) -> Docx {
 /// Both [`build`] and [`build_with_reference`] differ only in how their [`Writer`] is
 /// constructed; the traversal that turns blocks into paragraphs is identical, so it lives
 /// here once.
-fn render(mut writer: Writer, blocks: &[Block]) -> Docx {
+fn render_blocks(mut writer: Writer, blocks: &[Block]) -> Docx {
     // Index footnote definitions up front so a reference can precede its definition.
     writer.index_footnotes(blocks);
     for block in blocks {
@@ -282,7 +342,7 @@ impl Writer {
     /// Emit one block. `depth` is the current list-nesting level (0 at the top).
     fn write_block(&mut self, block: &Block, depth: usize) {
         match block {
-            Block::Heading { level, content } => {
+            Block::Heading { level, content, .. } => {
                 // Word ships built-in styles Heading1..Heading6; clamp deeper levels onto 6.
                 let style_id = format!("Heading{}", (*level).min(MAX_HEADING_STYLE));
                 if let Some(style) = self.style_for(&style_id) {
@@ -307,7 +367,21 @@ impl Writer {
                 let paragraph = self.paragraph(inlines, false, false, true);
                 self.push_paragraph(paragraph);
             }
-            Block::CodeBlock { code, .. } => self.write_code_block(code),
+            // Mermaid stays readable source until the diagram renderer lands.
+            Block::CodeBlock { code, .. } | Block::Mermaid { code, .. } => {
+                self.write_code_block(code)
+            }
+            Block::Figure(image) => {
+                let paragraph = self.paragraph(&[Inline::Image(image.clone())], false, false, true);
+                self.push_paragraph(paragraph);
+            }
+            Block::Div { content, .. } => {
+                for child in content {
+                    self.write_block(child, depth);
+                }
+            }
+            // Speaker notes belong to slides; raw HTML has no Word equivalent.
+            Block::Notes(_) | Block::RawHtml(_) => {}
             // Block quotes: in reference mode, style their direct paragraphs with the template's
             // "Quote" style; otherwise recurse plainly (no indent/border yet — a tracked follow-up).
             Block::BlockQuote(inner) => {
@@ -327,9 +401,18 @@ impl Writer {
                 start,
                 items,
             } => self.write_list(*ordered, *start, items, depth),
-            Block::Table { headers, rows } => {
+            Block::Table {
+                headers,
+                rows,
+                caption,
+                ..
+            } => {
                 let table = self.table(headers, rows);
                 self.push_table(table);
+                if !caption.is_empty() {
+                    let paragraph = self.paragraph(caption, false, false, true);
+                    self.push_paragraph(paragraph);
+                }
             }
             Block::ThematicBreak => {
                 let paragraph = self.new_paragraph();
@@ -349,7 +432,7 @@ impl Writer {
     /// first number rather than continuing the previous list); bullet lists share one.
     /// Nesting maps to the paragraph's indent level. Each item's first paragraph carries the
     /// number/bullet; a nested list inside an item recurses one level deeper.
-    fn write_list(&mut self, ordered: bool, start: u64, items: &[Vec<Block>], depth: usize) {
+    fn write_list(&mut self, ordered: bool, start: u64, items: &[ListItem], depth: usize) {
         // Pick (or mint) the numbering instance for this list.
         let num_id = if ordered {
             let id = self.alloc_num_id();
@@ -376,8 +459,10 @@ impl Writer {
 
         for item in items {
             // The item's first paragraph becomes the numbered line.
-            if let Some(Block::Paragraph(inlines)) =
-                item.iter().find(|b| matches!(b, Block::Paragraph(_)))
+            if let Some(Block::Paragraph(inlines)) = item
+                .content
+                .iter()
+                .find(|b| matches!(b, Block::Paragraph(_)))
             {
                 let mut paragraph = self
                     .new_paragraph()
@@ -385,13 +470,19 @@ impl Writer {
                 if let Some(ref style) = list_style {
                     paragraph = paragraph.style(style);
                 }
+                // A task item's box is its own run, ahead of the text: a glyph survives
+                // copy-paste, PDF export and plain-text extraction, a content control
+                // does not.
+                if let Some(checked) = item.task {
+                    paragraph = paragraph.add_run(styled(task_box(checked), false, false));
+                }
                 for run in self.inline_runs(inlines, false, false, true) {
                     paragraph = paragraph.add_run(run);
                 }
                 self.push_paragraph(paragraph);
             }
             // Nested lists inside the item recurse one indent level deeper.
-            for child in item {
+            for child in &item.content {
                 if let Block::List {
                     ordered,
                     start,
@@ -462,7 +553,37 @@ impl Writer {
                 Inline::Strong(inner) => {
                     out.extend(self.inline_runs(inner, true, italic, footnotes))
                 }
+                // Strikeout keeps its words; the styling is the DOCX port's to add.
+                Inline::Strikeout(inner) => {
+                    out.extend(self.inline_runs(inner, bold, italic, footnotes))
+                }
+                Inline::Superscript(inner) | Inline::Subscript(inner) => {
+                    let align = if matches!(inline, Inline::Superscript(_)) {
+                        VertAlignType::SuperScript
+                    } else {
+                        VertAlignType::SubScript
+                    };
+                    for mut run in self.inline_runs(inner, bold, italic, footnotes) {
+                        run.run_property = run.run_property.vert_align(align);
+                        out.push(run);
+                    }
+                }
                 Inline::Code(t) => out.push(mono(t)),
+                // Until OMML lands, a formula stays readable as its LaTeX source.
+                Inline::Math { display, tex } => {
+                    let fence = if *display { "$$" } else { "$" };
+                    out.push(styled(
+                        &format!("{fence}{}{fence}", tex.trim()),
+                        bold,
+                        italic,
+                    ))
+                }
+                // Until the bibliography lands, a citation reads as it was written.
+                Inline::Cite(cites) => out.push(styled(&cite_text(cites), bold, italic)),
+                Inline::InlineNote(content) => {
+                    out.push(self.inline_note_run(content, bold, italic, footnotes))
+                }
+                Inline::RawHtml(_) => {}
                 // v0.1: a link contributes only its (formatted) visible text.
                 Inline::Link { text, .. } => {
                     out.extend(self.inline_runs(text, bold, italic, footnotes))
@@ -474,7 +595,11 @@ impl Writer {
                 Inline::FootnoteRef(label) => {
                     out.push(self.footnote_run(label, bold, italic, footnotes))
                 }
-                Inline::Image(alt) => out.push(styled(&format!("[image: {alt}]"), bold, italic)),
+                Inline::Image(image) => out.push(styled(
+                    &format!("[image: {}]", image.alt_text()),
+                    bold,
+                    italic,
+                )),
             }
         }
         out
@@ -500,6 +625,31 @@ impl Writer {
         }
         // No live footnote (undefined label, or a cell/body context): fall back to a marker.
         styled(&format!("[{label}]"), bold, italic)
+    }
+
+    /// Build the run for an inline note (`^[…]`): a real Word footnote when possible,
+    /// otherwise the note's text in parentheses.
+    fn inline_note_run(
+        &mut self,
+        content: &[Inline],
+        bold: bool,
+        italic: bool,
+        footnotes: bool,
+    ) -> Run {
+        if footnotes {
+            let id = self.alloc_footnote_id();
+            let mut note = Footnote {
+                id,
+                content: Vec::new(),
+            };
+            note.add_content(self.paragraph(content, false, false, false));
+            return Run::new().add_footnote_reference(note);
+        }
+        styled(
+            &format!("({})", crate::ast::plain_text(content)),
+            bold,
+            italic,
+        )
     }
 
     /// Render a footnote definition's blocks into paragraphs for `footnotes.xml`.
@@ -633,6 +783,15 @@ fn styled(text: &str, bold: bool, italic: bool) -> Run {
         run = run.italic();
     }
     run
+}
+
+/// The box a task-list item opens with.
+fn task_box(checked: bool) -> &'static str {
+    if checked {
+        "\u{2611} "
+    } else {
+        "\u{2610} "
+    }
 }
 
 /// A monospace run for inline code / code-block lines.

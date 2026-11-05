@@ -3,6 +3,10 @@
 //! A `.pptx` is a zip of PresentationML parts; we crack it open and read the slide text out of
 //! each `ppt/slides/slideN.xml` (text lives in `<a:t>…</a:t>` runs) to assert that Markdown mapped
 //! onto slides the way the writer promises — one slide per `#`, body flattened to bullets.
+//!
+//! These pin the v0.4 `ppt-rs` writer, which only exists with the `legacy-pptx` feature.
+
+#![cfg(feature = "legacy-pptx")]
 
 use std::io::{Cursor, Read};
 

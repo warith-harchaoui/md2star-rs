@@ -50,8 +50,21 @@ required-features = ["cli"]
 [features]
 # On by default so `cargo install md2star-rs` still yields the three binaries.
 # Library consumers turn it off with `default-features = false`.
-default = ["cli"]
+default = ["cli", "legacy-pptx"]
 cli = ["dep:clap"]
+# The v0.4 PPTX writer on ppt-rs (src/pptx/legacy.rs). ppt-rs pulls zip 0.6 with its
+# default features, which compile bzip2 and zstd from C: that C is what a pure-Rust core
+# for iOS/Android cannot carry, so it lives behind this feature until the PPTX port
+# replaces it with a pure-Rust PresentationML writer. `--no-default-features` builds
+# without it (and PPTX output then answers "not ported yet").
+legacy-pptx = ["dep:ppt-rs"]
+# In-process PDF output (src/pdf.rs). The twin + PDF port adds its renderer here.
+pdf = []
+# Fetch `http(s)://` images (still opt-in per conversion: --allow-remote-images).
+# Off by default: the core makes no network access and needs no TLS stack.
+net = ["dep:ureq"]
+# Model-assisted layout selection through an OpenAI-compatible endpoint (src/llm.rs).
+llm = ["net"]
 
 [dependencies]
 # CommonMark + GFM reader. We drive it in *event* mode and fold the flat event stream into
@@ -72,7 +85,7 @@ docx-rs = "0.4"
 # 2026-10-02: the issue is still open and 0.2.27 still fails the same way (verified by
 # building a scratch crate against `ppt-rs = "0.2", default-features = false`), so the
 # pin stays.
-ppt-rs = { version = "=0.2.22", default-features = false }
+ppt-rs = { version = "=0.2.22", default-features = false, optional = true }
 # Typed error enums for the library surface — no stringly-typed errors leaking to callers.
 thiserror = "2"
 # Argument parsing for the binaries (derive keeps the CLI declaration close to the struct
@@ -83,10 +96,30 @@ clap = { version = "4", features = ["derive"], optional = true }
 # Used by the PPTX path to re-pack ppt-rs's output deterministically: ppt-rs stamps a
 # wall-clock timestamp into docProps/core.xml, so we rewrite that one part to a fixed value
 # and repack with a fixed entry mtime — restoring byte-idempotence. (Also our test dev-dep.)
-zip = "2"
+# Deflate only: zip's default features compile bzip2 and zstd from C, which a pure-Rust
+# core for iOS/Android cannot carry. (ppt-rs still pulls zip 0.6 with those defaults —
+# see the PPTX port.)
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# YAML front matter. Pure Rust, YAML 1.2, no serde: we convert its tree to our own
+# `MetaValue` so the AST does not leak a third-party type.
+yaml-rust2 = { version = "0.13", default-features = false }
+# Image format + pixel size from the header bytes only (no decoding), pure Rust, no deps.
+imagesize = "0.15"
+# `data:` URIs embed images as base64.
+base64 = "0.22"
+# Reading OOXML back (twin, audit, PPTX templates): one streaming XML reader for all three.
+# 0.41 because docx-rs already pulls it in: one copy in the tree, not two.
+quick-xml = "0.41"
+# HTTP for remote images (feature `net`), with bounded timeouts. rustls, no OpenSSL.
+ureq = { version = "3", optional = true }
+
+# --- phase 2: each port appends its own dependencies below its marker, nowhere else ---
+# DOCX port:
+# PPTX port:
+# twin + PDF port:
 
 [dev-dependencies]
 # Write generated .docx files into a throwaway dir instead of polluting the repo.
 tempfile = "3"
 # Crack open the produced .docx (a zip) in tests to assert on `word/document.xml`.
-zip = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }

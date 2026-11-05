@@ -1,35 +1,23 @@
-//! PPTX writer: our [`Block`]/[`Inline`] AST → a `.pptx` deck via `ppt-rs`.
+//! The v0.4 PPTX writer, on `ppt-rs` (feature `legacy-pptx`, on by default).
 //!
-//! The sibling of [`crate::writer`] (which targets DOCX). Because the reader produces a
-//! backend-agnostic AST, this module reuses that exact IR — nothing in `reader.rs` changes to
-//! gain a second output format; that reader/writer seam is the whole point of the AST.
+//! Each `#` heading starts a slide titled after it; everything until the next `#` is
+//! flattened to bullets (paragraphs and list items, nested lists and deeper headings as
+//! sub-bullets, code lines, one bullet per table row). Inline formatting is flattened to
+//! text: the `ppt-rs` quick-slide API is text-only.
 //!
-//! Mapping Markdown onto slides. A prose document has no explicit slide boundaries, so we
-//! adopt the conventional rule (the same one Pandoc uses by default):
-//! - **Every level-1 heading (`#`) starts a new slide**, and its text becomes the slide title.
-//! - Everything until the next `#` becomes that slide's **body**, flattened to bullet points:
-//!   paragraphs and list items become bullets (ordered lists use numbered bullets), nested list
-//!   items and deeper headings become sub-bullets, block quotes and code blocks contribute their
-//!   lines as bullets, and tables contribute one bullet per row (cells joined by `|`).
-//! - Content that appears **before the first `#`** (or a document with no `#` at all) lands on an
-//!   implicit first slide titled after the deck.
-//!
-//! Inline formatting (bold/italic/code) is flattened to plain text: the `ppt-rs` quick-slide API
-//! is text-only, and slide bodies are terse by nature. Footnote references are dropped (slides
-//! have no footnotes); images render as an `[image: alt]` placeholder, mirroring the DOCX writer.
-//!
-//! Determinism: `ppt-rs` stamps the current wall-clock time into `docProps/core.xml`, which
-//! would break byte-idempotence (two conversions a second apart would differ). We neutralise it
-//! in `normalize` — rewriting that one timestamp to a fixed sentinel and re-packing the zip
-//! with a fixed entry mtime — so identical Markdown yields byte-identical `.pptx` output on every
-//! run, even across threads, matching the DOCX path's guarantee (see `tests/pptx.rs`).
+//! Why it is quarantined behind a feature: `ppt-rs` depends on `zip` 0.6 with its
+//! default features, which compile bzip2 and zstd **from C**. That C is what kept the
+//! core from building for iOS and Android without a cross C toolchain. The PPTX port
+//! replaces this file with a pure-Rust PresentationML writer built on the template's own
+//! masters and layouts — which `ppt-rs` cannot do anyway — and then the feature and the
+//! dependency go.
 
 use std::io::{Cursor, Read, Write};
 
 use ppt_rs::pptx;
 use ppt_rs::prelude::SlideContent;
 
-use crate::ast::{Block, Inline};
+use crate::ast::{cite_text, Block, Inline, ListItem};
 use crate::error::{Error, Result};
 
 /// Deck title used when the document has no leading level-1 heading to name it after.
@@ -43,7 +31,7 @@ const CORE_PROPS_PART: &str = "docProps/core.xml";
 /// same bytes; the exact instant is meaningless for a generated document.
 const FIXED_TIMESTAMP: &str = "2001-01-01T00:00:00Z";
 
-/// Build a `.pptx` byte buffer from a parsed document.
+/// Build a `.pptx` byte buffer from a document's blocks.
 ///
 /// # Errors
 ///
@@ -53,7 +41,9 @@ pub fn build(blocks: &[Block]) -> Result<Vec<u8>> {
     for block in blocks {
         match block {
             // A level-1 heading opens a fresh slide titled after it.
-            Block::Heading { level: 1, content } => deck.start_slide(&inline_text(content)),
+            Block::Heading {
+                level: 1, content, ..
+            } => deck.start_slide(&inline_text(content)),
             // Footnote definitions are not rendered (they have no on-slide equivalent).
             Block::FootnoteDef { .. } => {}
             // Everything else is body content on the current slide (one is opened on demand).
@@ -69,7 +59,9 @@ pub fn build(blocks: &[Block]) -> Result<Vec<u8>> {
 /// merely starts another slide, so we look at the first block only.
 fn deck_title(blocks: &[Block]) -> String {
     match blocks.first() {
-        Some(Block::Heading { level: 1, content }) => inline_text(content),
+        Some(Block::Heading {
+            level: 1, content, ..
+        }) => inline_text(content),
         _ => DEFAULT_DECK_TITLE.to_string(),
     }
 }
@@ -151,32 +143,53 @@ impl Deck {
                 }
             }
             // Each code line is its own bullet so line breaks survive the flattening.
-            Block::CodeBlock { code, .. } => {
+            Block::CodeBlock { code, .. } | Block::Mermaid { code, .. } => {
                 for line in code.lines() {
                     self.bullet_at(depth, line);
                 }
             }
             // A table flattens to one bullet per row, cells joined by " | " (header included).
-            Block::Table { headers, rows } => {
+            Block::Table { headers, rows, .. } => {
                 self.bullet_at(depth, &join_cells(headers));
                 for row in rows {
                     self.bullet_at(depth, &join_cells(row));
                 }
             }
-            // Thematic breaks and stray footnote definitions have no slide equivalent → skipped.
-            Block::ThematicBreak | Block::FootnoteDef { .. } => {}
+            // A lone image is a bullet carrying its placeholder until images land.
+            Block::Figure(image) => {
+                self.bullet_at(depth, &inline_text(&[Inline::Image(image.clone())]))
+            }
+            // A div's blocks belong to the slide (columns are flattened for now).
+            Block::Div { content, .. } => {
+                for child in content {
+                    self.push_block(child, depth);
+                }
+            }
+            // Thematic breaks, stray footnote definitions, raw HTML and speaker notes
+            // have no on-slide equivalent → skipped (notes go to the notes pane once the
+            // template-based writer lands).
+            Block::ThematicBreak
+            | Block::FootnoteDef { .. }
+            | Block::RawHtml(_)
+            | Block::Notes(_) => {}
         }
     }
 
     /// Emit a list: each item's first paragraph is a bullet (numbered when `ordered`), and any
     /// nested list inside the item recurses one indent level deeper as sub-bullets.
-    fn push_list(&mut self, ordered: bool, items: &[Vec<Block>], depth: usize) {
+    fn push_list(&mut self, ordered: bool, items: &[ListItem], depth: usize) {
         for item in items {
             // The item's lead paragraph carries the bullet text.
-            if let Some(Block::Paragraph(inlines)) =
-                item.iter().find(|b| matches!(b, Block::Paragraph(_)))
+            if let Some(Block::Paragraph(inlines)) = item
+                .content
+                .iter()
+                .find(|b| matches!(b, Block::Paragraph(_)))
             {
-                let text = inline_text(inlines);
+                let mut text = inline_text(inlines);
+                if let Some(checked) = item.task {
+                    let mark = if checked { "\u{2611} " } else { "\u{2610} " };
+                    text.insert_str(0, mark);
+                }
                 // Ordered lists number only at the top level; nested items read as sub-bullets.
                 if ordered && depth == 0 {
                     self.numbered(&text);
@@ -185,7 +198,7 @@ impl Deck {
                 }
             }
             // Recurse into nested lists one level deeper.
-            for child in item {
+            for child in &item.content {
                 if let Block::List { ordered, items, .. } = child {
                     self.push_list(*ordered, items, depth + 1);
                 }
@@ -312,13 +325,24 @@ fn inline_text(inlines: &[Inline]) -> String {
         match inline {
             Inline::Text(t) | Inline::Code(t) => out.push_str(t),
             // Emphasis and links contribute only their (recursively flattened) text.
-            Inline::Emph(inner) | Inline::Strong(inner) => out.push_str(&inline_text(inner)),
+            Inline::Emph(inner)
+            | Inline::Strong(inner)
+            | Inline::Strikeout(inner)
+            | Inline::Superscript(inner)
+            | Inline::Subscript(inner) => out.push_str(&inline_text(inner)),
+            // A formula reads as its LaTeX source until OMML lands; a citation as written.
+            Inline::Math { display, tex } => {
+                let fence = if *display { "$$" } else { "$" };
+                out.push_str(&format!("{fence}{}{fence}", tex.trim()));
+            }
+            Inline::Cite(cites) => out.push_str(&cite_text(cites)),
+            Inline::InlineNote(_) | Inline::RawHtml(_) => {}
             Inline::Link { text, .. } => out.push_str(&inline_text(text)),
             // Both break kinds become a space so adjacent words don't run together.
             Inline::SoftBreak | Inline::HardBreak => out.push(' '),
             // Footnotes have no place on a slide; drop the marker entirely.
             Inline::FootnoteRef(_) => {}
-            Inline::Image(alt) => out.push_str(&format!("[image: {alt}]")),
+            Inline::Image(image) => out.push_str(&format!("[image: {}]", image.alt_text())),
         }
     }
     out
