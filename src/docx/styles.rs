@@ -127,7 +127,7 @@ const DEFS: &[Def] = &[
         id: "SourceCode",
         name: "Source Code",
         based_on: Some("Normal"),
-        xml: r#"<w:style w:type="paragraph" w:customStyle="1" w:styleId="SourceCode"><w:name w:val="Source Code"/><w:basedOn w:val="Normal"/><w:link w:val="VerbatimChar"/><w:pPr><w:wordWrap w:val="off"/><w:shd w:val="clear" w:color="auto" w:fill="F8F8F8"/><w:spacing w:before="120" w:after="120" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:sz w:val="20"/></w:rPr></w:style>"#,
+        xml: r#"<w:style w:type="paragraph" w:customStyle="1" w:styleId="SourceCode"><w:name w:val="Source Code"/><w:basedOn w:val="Normal"/><w:link w:val="VerbatimChar"/><w:pPr><w:shd w:val="clear" w:color="auto" w:fill="F8F8F8"/><w:wordWrap w:val="off"/><w:spacing w:before="120" w:after="120" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:sz w:val="20"/></w:rPr></w:style>"#,
     },
     Def {
         id: "FootnoteText",
@@ -139,7 +139,7 @@ const DEFS: &[Def] = &[
         id: "Caption",
         name: "caption",
         based_on: Some("Normal"),
-        xml: r#"<w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/><w:basedOn w:val="Normal"/><w:link w:val="CaptionChar"/><w:pPr><w:spacing w:before="0" w:after="120"/></w:pPr><w:rPr><w:i/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>"#,
+        xml: r#"<w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="0" w:after="120"/></w:pPr><w:rPr><w:i/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>"#,
     },
     Def {
         id: "TableCaption",

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use super::{Bibliography, Entry, Name, Style};
+use super::{recase, Bibliography, Case, Entry, Name, Style};
 use crate::ast::{
     cite_text, Attr, Block, Citation, CitationMode, Document, Inline, MetaValue, Warning,
 };
@@ -284,6 +284,8 @@ struct Locale {
     online: &'static str,
     available: &'static str,
     months: [&'static str; 12],
+    /// citeproc title-cases titles only in an English locale.
+    english: bool,
 }
 
 impl Locale {
@@ -309,6 +311,7 @@ impl Locale {
                 "Jan.", "Feb.", "Mar.", "Apr.", "May", "Jun.", "Jul.", "Aug.", "Sep.", "Oct.",
                 "Nov.", "Dec.",
             ],
+            english: prefix == "en",
         };
         match prefix.as_str() {
             "fr" => Locale {
@@ -349,6 +352,9 @@ struct Formatter<'a> {
     index: HashMap<&'a str, usize>,
     /// key → the year suffix (`a`, `b`) that tells same-author same-year works apart.
     suffix: HashMap<&'a str, char>,
+    /// Family names that different cited people share: shown with initials in
+    /// citations (`C. Manning` and `C. D. Manning`), as citeproc's `add-givenname`.
+    ambiguous: HashSet<String>,
 }
 
 impl<'a> Formatter<'a> {
@@ -361,12 +367,32 @@ impl<'a> Formatter<'a> {
             .enumerate()
             .map(|(i, e)| (e.key.as_str(), i))
             .collect();
+        // citeproc's `primary-name` rule: only first authors are told apart.
+        let mut givens: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for e in &entries {
+            let names = if e.authors.is_empty() {
+                &e.editors
+            } else {
+                &e.authors
+            };
+            if let Some(n) = names.iter().find(|n| !n.others && !n.given.is_empty()) {
+                givens
+                    .entry(n.family.as_str())
+                    .or_default()
+                    .insert(n.given.as_str());
+            }
+        }
+        let ambiguous: HashSet<String> = givens
+            .into_iter()
+            .filter(|(_, g)| g.len() > 1)
+            .map(|(f, _)| f.to_string())
+            .collect();
         let mut suffix = HashMap::new();
         if style == Style::AuthorDate {
             let mut groups: BTreeMap<(String, String), Vec<&'a str>> = BTreeMap::new();
             for e in &entries {
                 groups
-                    .entry((short_authors(e, &locale), raw_year(e)))
+                    .entry((short_authors(e, &locale, &ambiguous), raw_year(e)))
                     .or_default()
                     .push(e.key.as_str());
             }
@@ -384,7 +410,22 @@ impl<'a> Formatter<'a> {
             entries,
             index,
             suffix,
+            ambiguous,
         }
+    }
+
+    /// A title field, re-cased as citeproc does: title case in Chicago (English),
+    /// sentence case for IEEE's titles; as written otherwise.
+    fn cased(&self, e: &Entry, field: &str) -> Option<String> {
+        let decoded = e.field(field)?;
+        let raw = e.raw.get(field).map(String::as_str).unwrap_or(decoded);
+        Some(match self.style {
+            Style::AuthorDate if self.locale.english => recase(raw, Case::Title),
+            Style::Numeric if field == "title" || field == "booktitle" => {
+                recase(raw, Case::Sentence)
+            }
+            _ => decoded.to_string(),
+        })
     }
 
     fn year(&self, e: &Entry) -> String {
@@ -430,7 +471,10 @@ impl<'a> Formatter<'a> {
                         inner.push_str(", ");
                         inner.push_str(&loc);
                     }
-                    format!("{} ({inner})", short_authors(e, &self.locale))
+                    format!(
+                        "{} ({inner})",
+                        short_authors(e, &self.locale, &self.ambiguous)
+                    )
                 })
                 .collect();
             return parts.join("; ");
@@ -439,7 +483,7 @@ impl<'a> Formatter<'a> {
         let mut last_author: Option<String> = None;
         for c in cites {
             let e = self.entry(&c.key);
-            let author = short_authors(e, &self.locale);
+            let author = short_authors(e, &self.locale, &self.ambiguous);
             let loc = chicago_locator(&c.suffix);
             let mut year = self.year(e);
             if !loc.is_empty() {
@@ -533,7 +577,8 @@ impl<'a> Formatter<'a> {
     fn chicago_entry(&self, e: &Entry, names: &str) -> Vec<Inline> {
         let l = &self.locale;
         let mut o = Out::default();
-        let title = e.field("title").unwrap_or(&e.key);
+        let title = self.cased(e, "title").unwrap_or_else(|| e.key.clone());
+        let title = title.as_str();
         if names.is_empty() {
             // No author: the title leads.
             o.title(e, title, true);
@@ -552,9 +597,12 @@ impl<'a> Formatter<'a> {
         let kind = e.kind.as_str();
         match kind {
             "article" => {
-                if let Some(j) = e.field("journal").or_else(|| e.field("journaltitle")) {
+                if let Some(j) = self
+                    .cased(e, "journal")
+                    .or_else(|| self.cased(e, "journaltitle"))
+                {
                     o.space();
-                    o.emph(j);
+                    o.emph(&j);
                     if let Some(v) = e.field("volume") {
                         o.text(&format!(" {v}"));
                     }
@@ -562,22 +610,22 @@ impl<'a> Formatter<'a> {
                         o.text(&format!(" ({n})"));
                     }
                     if let Some(p) = e.field("pages") {
-                        o.text(&format!(": {p}"));
+                        o.text(&format!(": {}", chicago_pages(p)));
                     }
                     o.period();
                 }
             }
             "inproceedings" | "conference" | "incollection" | "inbook" => {
-                if let Some(b) = e.field("booktitle") {
+                if let Some(b) = self.cased(e, "booktitle") {
                     o.space();
                     o.text(l.in_);
                     o.space();
-                    o.emph(b);
+                    o.emph(&b);
                     if !e.editors.is_empty() && !e.authors.is_empty() {
                         o.text(&format!(", {} {}", l.edited_by, plain_names(&e.editors, l)));
                     }
                     if let Some(p) = e.field("pages") {
-                        o.text(&format!(", {p}"));
+                        o.text(&format!(", {}", chicago_pages(p)));
                     }
                     o.period();
                 }
@@ -662,7 +710,8 @@ impl<'a> Formatter<'a> {
             o.text(&names);
             o.text(", ");
         }
-        let title = e.field("title").unwrap_or(&e.key);
+        let title = self.cased(e, "title").unwrap_or_else(|| e.key.clone());
+        let title = title.as_str();
         let year = raw_year(e);
         let kind = e.kind.as_str();
         // Each kind ends where its date goes; doi/url follow.
@@ -688,9 +737,9 @@ impl<'a> Formatter<'a> {
             }
             "inproceedings" | "conference" | "incollection" | "inbook" => {
                 o.quoted_comma(title);
-                if let Some(b) = e.field("booktitle") {
+                if let Some(b) = self.cased(e, "booktitle") {
                     o.text(" in ");
-                    o.emph(b);
+                    o.emph(&b);
                     o.text(",");
                 }
                 if !e.editors.is_empty() && !e.authors.is_empty() {
@@ -781,6 +830,32 @@ fn is_book_like(kind: &str) -> bool {
     )
 }
 
+/// A page range the Chicago way (CMOS): `770–778` → `770–78`, `101–108` → `101–8`,
+/// `100–104` and `71–72` in full, `1496–1504` in full.
+fn chicago_pages(pages: &str) -> String {
+    let Some((a, b)) = pages.split_once(['–', '-']) else {
+        return pages.to_string();
+    };
+    let (a, b) = (a.trim(), b.trim());
+    let (Ok(start), Ok(_)) = (a.parse::<u64>(), b.parse::<u64>()) else {
+        return pages.to_string();
+    };
+    let full = format!("{a}–{b}");
+    if a.len() != b.len() || start < 100 || start % 100 == 0 {
+        return full;
+    }
+    let differ = a.len() - a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    let shown = if start % 100 < 10 {
+        differ.max(1)
+    } else {
+        if start >= 1000 && differ >= 3 {
+            return full;
+        }
+        differ.max(2)
+    };
+    format!("{a}–{}", &b[b.len() - shown..])
+}
+
 /// `pp.` for a range, `p.` for one page.
 fn pages_label(pages: &str) -> &'static str {
     if pages.contains(['–', '-', ',']) {
@@ -868,18 +943,37 @@ fn chicago_locator(suffix: &str) -> String {
     s.to_string()
 }
 
-/// Family name with its particle when the particle is capitalised (kept by citeproc).
-fn family(n: &Name) -> String {
-    n.family.clone()
+/// `Charles F. Van` → `C. F. V.`, `Jean-Pierre` → `J.-P.`.
+fn initials(given: &str) -> String {
+    given
+        .split_whitespace()
+        .map(|word| {
+            word.split('-')
+                .filter_map(|part| part.chars().find(|c| c.is_alphabetic()))
+                .map(|c| format!("{c}."))
+                .collect::<Vec<_>>()
+                .join("-")
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The author part of an author-date citation: `Pearl`, `Golub and Loan`,
 /// `Goodfellow, Bengio, and Courville`, `Bouveyron et al.`.
-fn short_authors(e: &Entry, l: &Locale) -> String {
+fn short_authors(e: &Entry, l: &Locale, ambiguous: &HashSet<String>) -> String {
     let names: &[Name] = if e.authors.is_empty() {
         &e.editors
     } else {
         &e.authors
+    };
+    let first = names.iter().find(|n| !n.others);
+    let family = |n: &Name| {
+        if ambiguous.contains(&n.family) && first.is_some_and(|f| std::ptr::eq(f, n)) {
+            format!("{} {}", initials(&n.given), n.family)
+        } else {
+            n.family.clone()
+        }
     };
     let real: Vec<&Name> = names.iter().filter(|n| !n.others).collect();
     let others = names.iter().any(|n| n.others);
@@ -995,20 +1089,8 @@ fn ieee_names(names: &[Name], l: &Locale) -> String {
         return String::new();
     }
     let one = |n: &Name| {
-        let initials: Vec<String> = n
-            .given
-            .split_whitespace()
-            .map(|word| {
-                word.split('-')
-                    .filter_map(|part| part.chars().find(|c| c.is_alphabetic()))
-                    .map(|c| format!("{c}."))
-                    .collect::<Vec<_>>()
-                    .join("-")
-            })
-            .filter(|s| !s.is_empty())
-            .collect();
         let mut s = String::new();
-        for p in [initials.join(" "), n.particle.clone(), n.family.clone()] {
+        for p in [initials(&n.given), n.particle.clone(), n.family.clone()] {
             if !p.is_empty() {
                 if !s.is_empty() {
                     s.push(' ');
@@ -1311,7 +1393,7 @@ mod tests {
             vec![
                 "Doe, John. 2020. “A Thesis.” PhD thesis, MIT.",
                 "He, Kaiming, and Xiangyu Zhang. 2016. “Deep Residual Learning.” In Proceedings \
-                 of CVPR, 770–778. Las Vegas: IEEE.",
+                 of CVPR, 770–78. Las Vegas: IEEE.",
                 "Vaswani, Ashish, Noam Shazeer, and Niki Parmar. 2017. “Attention Is All You \
                  Need.” Advances in Neural Information Processing Systems 30 (2): 5998–6008. \
                  https://doi.org/10.5555/3295222.",
@@ -1336,9 +1418,9 @@ mod tests {
         assert_eq!(
             refs(&doc),
             vec![
-                "[1] J. Pearl, Causality: Models, Reasoning, and Inference, 2nd ed. Cambridge \
+                "[1] J. Pearl, Causality: Models, reasoning, and inference, 2nd ed. Cambridge \
                  University Press, 2009.",
-                "[2] J. Pearl, Causality: Models, Reasoning, and Inference, 1st ed. Cambridge \
+                "[2] J. Pearl, Causality: Models, reasoning, and inference, 1st ed. Cambridge \
                  University Press, 2000.",
             ]
         );
@@ -1346,6 +1428,8 @@ mod tests {
 
     #[test]
     fn numeric_other_kinds() {
+        // Pandoc 3.6 + ieee.csl on the same entries, word for word (sentence case
+        // included).
         let (doc, _) = render(
             "[@vaswani2017; @he2016; @doe2020; @woodlock; @golub]",
             Style::Numeric,
@@ -1353,15 +1437,15 @@ mod tests {
         assert_eq!(
             refs(&doc),
             vec![
-                "[1] A. Vaswani, N. Shazeer, and N. Parmar, “Attention Is All You Need,” \
+                "[1] A. Vaswani, N. Shazeer, and N. Parmar, “Attention is all you need,” \
                  Advances in Neural Information Processing Systems, vol. 30, no. 2, pp. \
                  5998–6008, 2017, doi: 10.5555/3295222.",
-                "[2] K. He and X. Zhang, “Deep Residual Learning,” in Proceedings of CVPR, Las \
+                "[2] K. He and X. Zhang, “Deep residual learning,” in Proceedings of CVPR, Las \
                  Vegas: IEEE, 2016, pp. 770–778.",
-                "[3] J. Doe, “A Thesis,” PhD thesis, MIT, 2020.",
-                "[4] D. Woodlock, “Don Woodlock.” 2010. Accessed: Feb. 21, 2026. [Online]. \
+                "[3] J. Doe, “A thesis,” PhD thesis, MIT, 2020.",
+                "[4] D. Woodlock, “Don woodlock.” 2010. Accessed: Feb. 21, 2026. [Online]. \
                  Available: https://www.youtube.com/dwoodlock",
-                "[5] G. H. Golub and C. F. V. Loan, Matrix Computations. 2013.",
+                "[5] G. H. Golub and C. F. V. Loan, Matrix computations. 2013.",
             ]
         );
     }
@@ -1417,6 +1501,20 @@ mod tests {
         assert_eq!(chicago_locator("pp. 3–5"), "3–5");
         assert_eq!(chicago_locator("chap. 2"), "chap. 2");
         assert_eq!(ordinal_edition("2"), "2nd");
+        for (range, chicago) in [
+            ("770–778", "770–78"),
+            ("101–108", "101–8"),
+            ("100–104", "100–104"),
+            ("71–72", "71–72"),
+            ("1496–1504", "1496–1504"),
+            ("1087–1089", "1087–89"),
+            ("321–328", "321–28"),
+            ("498–532", "498–532"),
+            ("5998–6008", "5998–6008"),
+            ("xii–xv", "xii–xv"),
+        ] {
+            assert_eq!(chicago_pages(range), chicago, "{range}");
+        }
         assert_eq!(ordinal_edition("11"), "11th");
         assert_eq!(ordinal_edition("Second"), "Second");
         let c = cite("a", CitationMode::Normal, "", "");

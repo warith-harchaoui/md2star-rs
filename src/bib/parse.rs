@@ -94,6 +94,7 @@ fn at_line(err: &str, line: usize) -> Error {
 /// Turn raw (undecoded) fields into an [`Entry`].
 fn build_entry(key: String, kind: String, raw: Vec<(String, String)>) -> Entry {
     let mut fields = BTreeMap::new();
+    let mut raw_fields = BTreeMap::new();
     let mut authors = Vec::new();
     let mut editors = Vec::new();
     for (name, value) in raw {
@@ -108,7 +109,8 @@ fn build_entry(key: String, kind: String, raw: Vec<(String, String)>) -> Entry {
         } else {
             decode_latex(&value)
         };
-        fields.insert(name, decoded);
+        fields.insert(name.clone(), decoded);
+        raw_fields.insert(name, value);
     }
     Entry {
         key,
@@ -116,7 +118,133 @@ fn build_entry(key: String, kind: String, raw: Vec<(String, String)>) -> Entry {
         fields,
         authors,
         editors,
+        raw: raw_fields,
     }
+}
+
+/// How [`recase`] changes a title.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Case {
+    /// Chicago's headline style: every word capitalised but the short function words
+    /// (`a`, `of`, `the`…) inside the title. Words already holding a capital are kept.
+    Title,
+    /// IEEE's: lower case but the first word, the first word after a colon, and words
+    /// that are not plain capitalised words (`GPT`, `iPhone`, `McDonald`).
+    Sentence,
+}
+
+/// The words title case leaves in lower case inside a title (CSL's list, plus the
+/// Romance particles citeproc keeps lower case).
+const STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "as", "at", "but", "by", "down", "for", "from", "in", "into", "nor", "of",
+    "on", "onto", "or", "over", "so", "the", "till", "to", "up", "via", "with", "yet", "vs.", "v.",
+    "de", "del", "der", "di", "du", "la", "le", "van", "von",
+];
+
+/// Re-case a raw (undecoded) BibTeX title as citeproc does, leaving `{Protected}` words
+/// as written, and return it decoded.
+///
+/// # Examples
+///
+/// ```
+/// use md2star_rs::bib::{recase, Case};
+/// assert_eq!(recase("The elements of {Bayesian} learning: a primer", Case::Title),
+///            "The Elements of Bayesian Learning: A Primer");
+/// assert_eq!(recase("The Elements of {Bayesian} Learning: A Primer", Case::Sentence),
+///            "The elements of Bayesian learning: A primer");
+/// ```
+pub fn recase(raw: &str, case: Case) -> String {
+    let words = split_top_level_spaces(raw);
+    let last = words.len().saturating_sub(1);
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut sentence_start = true;
+    for (i, word) in words.iter().enumerate() {
+        let decoded = decode_latex(word);
+        let protected = word.contains('{') && !word.contains("{\\");
+        let cased = if protected || decoded.is_empty() {
+            decoded.clone()
+        } else {
+            match case {
+                Case::Title => decoded
+                    .split('-')
+                    .enumerate()
+                    .map(|(j, part)| {
+                        let first_or_last = (i == 0 && j == 0) || i == last;
+                        title_word(part, sentence_start && j == 0 || first_or_last)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("-"),
+                Case::Sentence => decoded
+                    .split('-')
+                    .enumerate()
+                    .map(|(j, part)| sentence_word(part, sentence_start && j == 0))
+                    .collect::<Vec<_>>()
+                    .join("-"),
+            }
+        };
+        sentence_start = decoded.ends_with([':', '?', '!', '.']);
+        out.push(cased);
+    }
+    out.join(" ")
+}
+
+/// One word in title case.
+fn title_word(word: &str, force: bool) -> String {
+    let core = word.trim_start_matches(|c: char| !c.is_alphanumeric());
+    // Already capitalised somewhere, or an elision (`d’ouvrages`): as written.
+    if word.chars().any(char::is_uppercase)
+        || core.chars().nth(1).is_some_and(|c| c == '’' || c == '\'')
+    {
+        return word.to_string();
+    }
+    let bare = core.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '.');
+    if !force && STOP_WORDS.contains(&bare.to_lowercase().as_str()) {
+        return word.to_string();
+    }
+    capitalise_first(word)
+}
+
+/// One word in sentence case.
+fn sentence_word(word: &str, first: bool) -> String {
+    let letters: Vec<char> = word.chars().filter(|c| c.is_alphabetic()).collect();
+    let caps = letters.iter().filter(|c| c.is_uppercase()).count();
+    // `GPT`, `iPhone`, `McDonald`: not an ordinary capitalised word.
+    let special = caps > 1 || letters.first().is_some_and(|c| c.is_lowercase()) && caps > 0;
+    if special {
+        return word.to_string();
+    }
+    if first {
+        return capitalise_first(word);
+    }
+    word.to_lowercase()
+}
+
+fn capitalise_first(word: &str) -> String {
+    // Only opening brackets and quotes may precede the letter (`(ou` → `(Ou`); a word
+    // led by other punctuation (`:probabl`) is a name as written.
+    let lead: String = word.chars().take_while(|c| !c.is_alphanumeric()).collect();
+    if lead.chars().any(|c| !"([{“‘\"'«".contains(c)) {
+        return word.to_string();
+    }
+    // `2nd`: a word that starts with a digit has nothing to capitalise.
+    if word
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .is_some_and(|c| c.is_numeric())
+    {
+        return word.to_string();
+    }
+    let mut out = String::with_capacity(word.len());
+    let mut done = false;
+    for c in word.chars() {
+        if !done && c.is_alphabetic() {
+            out.extend(c.to_uppercase());
+            done = true;
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Fields whose value is an identifier, kept as written.
@@ -972,6 +1100,48 @@ mod tests {
         assert_eq!(names[0].family, "Schütze");
         assert_eq!(names[1].given, "Émile");
         assert_eq!(names[1].family, "Zola");
+    }
+
+    #[test]
+    fn titles_are_recased_as_citeproc_does() {
+        // Pandoc 3.6's output on tests/fixtures/references.bib.
+        for (raw, title, sentence) in [
+            (
+                "La plus belle histoire de l'intelligence : Des origines aux neurones artificiels",
+                "La Plus Belle Histoire de l’intelligence : Des Origines Aux Neurones Artificiels",
+                "La plus belle histoire de l’intelligence : Des origines aux neurones artificiels",
+            ),
+            (
+                "Algonaute – une sélection personnelle d'ouvrages techniques (ou presque)",
+                "Algonaute – Une Sélection Personnelle d’ouvrages Techniques (Ou Presque)",
+                "Algonaute – une sélection personnelle d’ouvrages techniques (ou presque)",
+            ),
+            ("fast.ai", "Fast.ai", "Fast.ai"),
+            (":probabl", ":probabl", ":probabl"),
+            (
+                "Model-Based Clustering",
+                "Model-Based Clustering",
+                "Model-based clustering",
+            ),
+            (
+                "Computer Vision: Algorithms and Applications, 2nd Edition",
+                "Computer Vision: Algorithms and Applications, 2nd Edition",
+                "Computer vision: Algorithms and applications, 2nd edition",
+            ),
+            (
+                "Introduction au Machine Learning",
+                "Introduction Au Machine Learning",
+                "Introduction au machine learning",
+            ),
+            (
+                "Neural networks for {NLP} and {Bayes} on {GPU}s",
+                "Neural Networks for NLP and Bayes on GPUs",
+                "Neural networks for NLP and Bayes on GPUs",
+            ),
+        ] {
+            assert_eq!(recase(raw, Case::Title), title, "{raw}");
+            assert_eq!(recase(raw, Case::Sentence), sentence, "{raw}");
+        }
     }
 
     #[test]

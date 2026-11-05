@@ -6,7 +6,9 @@
 //!   `#` concatenation, `@string` macros, `@comment`/`@preamble` skipped, LaTeX accents
 //!   (`{\'e}`, `\"o`) and `--` decoded ([`decode_latex`]), names split (`Last, First and
 //!   Other, A.`, `First von Last`, `von Last, Jr, First`), `{Protected Case}` kept.
-//! - **Render**: two built-in styles. [`Style::AuthorDate`] follows Chicago author-date,
+//! - **Render**: two built-in styles, which also re-case titles as citeproc does
+//!   ([`Case`]: title case in Chicago for an English document, sentence case in IEEE;
+//!   `{Protected}` words untouched). [`Style::AuthorDate`] follows Chicago author-date,
 //!   Pandoc's default (`(Pearl 2009, 3; see also Pearl 2000)`, `Pearl (2009, chap. 2)`,
 //!   `(2000)`, `et al.` from four authors, `2009a`/`2009b` disambiguation, the reference
 //!   list sorted by author then year with `———.` for a repeated author list).
@@ -29,10 +31,13 @@
 //!
 //! Full CSL is out of scope: a `csl:` file is never read. Its *name* selects a built-in
 //! style (`ieee.csl` → numeric, `apa.csl` → author-date); any other name falls back to
-//! author-date with a warning. Compared with Pandoc's citeproc, titles are not
-//! re-cased (citeproc title-cases English titles in Chicago and sentence-cases them in
-//! IEEE), page ranges are not abbreviated (`770–778`, not `770–78`), and authors sharing
-//! a family name are not told apart by their initials.
+//! author-date with a warning. Within the two styles, the output matches Pandoc 3.6's
+//! citeproc word for word on the fixtures (`tests/docx_citations.rs`): title and
+//! sentence case, Chicago page ranges (`770–78`), first authors told apart by their
+//! initials (`C. Manning`, `C. D. Manning`). Entry kinds beyond book, article, paper in
+//! proceedings, chapter, thesis, report and misc fall back to the book or misc layout,
+//! and the localised words cover English and French (the conjunction alone for
+//! Spanish, German, Italian, Portuguese, Dutch and Russian).
 //!
 //! Owned by the DOCX port (see [`crate::docx`]); the PPTX and PDF writers call
 //! [`resolve`] (or [`apply`]) read-only.
@@ -40,7 +45,7 @@
 mod parse;
 mod render;
 
-pub use parse::{decode_latex, parse};
+pub use parse::{decode_latex, parse, recase, Case};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -79,6 +84,9 @@ pub struct Entry {
     pub authors: Vec<Name>,
     /// The `editor` field, split into names.
     pub editors: Vec<Name>,
+    /// The fields as written (braces and LaTeX kept): what title casing needs to know
+    /// which words are `{Protected}`.
+    pub raw: BTreeMap<String, String>,
 }
 
 impl Entry {

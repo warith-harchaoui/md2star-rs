@@ -55,8 +55,10 @@ that the core builds for iOS and Android.
   `--citation-style`, `citation-style:` or the *name* of a `csl:` file:
   Chicago author-date, Pandoc's default (`(Pearl 2009, 3; see also Pearl
   2000)`, `Pearl (2009, chap. 2)`, `(2000)`, `2009a`/`2009b`, `———.` for a
-  repeated author), and IEEE numeric (`[1, p. 3]`, `[2], [1]`). An unknown key
-  stays as written, in bold, with a warning. The reference list goes into a
+  repeated author), and IEEE numeric (`[1, p. 3]`, `[1], [2]`), titles re-cased
+  as citeproc does. On every entry of the fixture bibliography the rendered text
+  is word for word Pandoc 3.6's, in both styles. An unknown key stays as written,
+  in bold, with a warning. The reference list goes into a
   `::: {#refs}` div or at the end under `--bibliography-name`,
   `reference-section-title` or the localised "Bibliography"; `nocite` is read.
   CSL files themselves are not read.

@@ -561,7 +561,7 @@ pub(super) fn pack(base: Base, mut out: Output) -> Result<Vec<u8>> {
     let mut defaults = base.ct_defaults;
     defaults.insert("rels".into(), CT_RELS.into());
     defaults.insert("xml".into(), "application/xml".into());
-    for (name, _) in parts.iter() {
+    for name in parts.keys() {
         if let Some(ext) = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()) {
             if let Some(ct) = media_type(&ext) {
                 defaults.entry(ext).or_insert_with(|| ct.to_string());
