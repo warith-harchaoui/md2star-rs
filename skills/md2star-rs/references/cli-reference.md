@@ -86,6 +86,22 @@ Pandoc pass-through flags, `--skip-phase`, `--lint` and
 `--no-remote-templates` do not apply to an in-process converter with no Pandoc
 and no remote templates, and are not offered.
 
+## `pdf` — in process, through Typst
+
+```
+md2star-rs pdf report.md                 # → report.pdf
+md2star-rs pdf report.md --bib refs.bib --toc --lang fr-FR
+```
+
+Needs a build with the `pdf` feature (`cargo install md2star-rs --features pdf`,
+Rust 1.92 or newer); without it the command says so and exits `1`. The PDF is
+typeset by Typst inside the process with fonts compiled into the binary, so it
+is the same file on every machine and every run. `--reference-doc` does not
+apply: the PDF has its own typography. Formulas are typeset natively; a LaTeX
+command outside the supported subset is shown as text with a warning. With the
+`mermaid` feature, Mermaid blocks become diagrams; without it they stay code with
+a warning.
+
 ## `twin` — a document back to Markdown
 
 ```

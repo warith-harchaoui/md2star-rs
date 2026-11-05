@@ -109,8 +109,38 @@ that the core builds for iOS and Android.
   invented. A PDF is refused with the reason (no OCR on every device). Tested
   by round trips Markdown → md2star-rs → twin → Markdown, against md2star's
   own `.docx`/`.pptx`, and LaTeX → OMML → LaTeX over the converter above.
+- **PDF in process, through Typst** (feature `pdf`, `md2star-rs pdf`): the
+  document is written as Typst markup (`pdf::to_typst`, every author character
+  escaped) and compiled in memory by the `typst` crates with embedded fonts
+  (Libertinus Serif, New Computer Modern Math, DejaVu Sans Mono): no LibreOffice,
+  no LaTeX, no temporary file, no system font. Title block, headings with
+  anchors, justified paragraphs hyphenated in the document's language, lists
+  (start numbers, tasks), tables with alignment and captions, figures with
+  captions and sizes, code, quotes, two-column divs, footnotes at the foot of
+  their page, links, a table of contents with `--toc`, citations through
+  `--bib`, and native math: LaTeX formulas are translated to Typst math
+  (fractions, scripts, roots, big operators, delimiters, matrices, `cases`,
+  aligned equations, accents, font commands, Greek, operators, arrows); an
+  unknown command stays visible with a warning, and if Typst still rejects a
+  formula the document is set again with formulas as LaTeX source rather than
+  failing. Output is byte-identical run to run (fixed identifier, no date).
+  Tested by reading the PDFs back with poppler where installed.
+- **Mermaid → SVG in process** (feature `mermaid`, `mermaid::render_mermaid`),
+  through the pure-Rust `mermaid-rs-renderer`: flowchart, sequence and pie
+  render cleanly; the PDF writer embeds them. Its text measurement uses the
+  machine's fonts, so the SVG is stable on one machine but not identical across
+  machines, and it caches one font under `~/.cache/mmdr`. Without the feature,
+  a diagram stays a readable code block with a `mermaid-not-rendered` warning.
 
 ### Changed
+
+- **The `pdf` feature needs Rust 1.92** (Typst 0.15's floor; checked with a real
+  1.92.0 toolchain, and 1.88.0 refuses it). The crate's MSRV stays 1.88 for
+  everything else. With `pdf`, the release binary grows from about 6 MB to about
+  50 MB (stripped, macOS arm64), about 10 MB of which are the embedded fonts;
+  `mermaid` adds 2.5 MB more.
+- The pre-push hook also runs the tests with `--features pdf,mermaid` and checks
+  that build for iOS and Android.
 
 - The DOCX writer moved to `md2star_rs::docx` (`md2star_rs::writer` remains as
   a deprecated alias). Superscript and subscript are real vertical alignment,

@@ -61,8 +61,12 @@ legacy-pptx = ["dep:ppt-rs"]
 # SVG images in DOCX get the PNG fallback Word requires, rasterised in process by resvg
 # (pure Rust). Without it an SVG is embedded behind a transparent placeholder.
 svg = ["dep:resvg"]
-# In-process PDF output (src/pdf.rs). The twin + PDF port adds its renderer here.
-pdf = []
+# In-process PDF output (src/pdf.rs): Markdown → Typst markup → PDF, compiled in memory
+# by the typst crates with embedded fonts. Raises the MSRV to 1.92 for this feature only
+# (Typst 0.15's floor); everything else keeps 1.88.
+pdf = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-assets"]
+# Mermaid → SVG in process (src/mermaid.rs), used by the writers when compiled in.
+mermaid = ["dep:mermaid-rs-renderer"]
 # Fetch `http(s)://` images (still opt-in per conversion: --allow-remote-images).
 # Off by default: the core makes no network access and needs no TLS stack.
 net = ["dep:ureq"]
@@ -124,6 +128,17 @@ ureq = { version = "3", optional = true }
 resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts"], optional = true }
 # PPTX port:
 # twin + PDF port:
+# Typst as a library: the compiler, its PDF exporter, its layout engine (where
+# `PagedDocument` lives) and its fonts (Libertinus Serif, New Computer Modern + Math,
+# DejaVu Sans Mono), embedded so a phone needs no system font. Pure Rust except `psm`
+# (via `stacker`), which assembles stack-switching code with the target's C toolchain.
+typst = { version = "0.15", optional = true }
+typst-pdf = { version = "0.15", optional = true }
+typst-layout = { version = "0.15", optional = true }
+typst-assets = { version = "0.15", features = ["fonts"], optional = true }
+# Mermaid → SVG without a browser. `default-features = false` drops its CLI and the
+# resvg-based PNG output.
+mermaid-rs-renderer = { version = "0.3", default-features = false, optional = true }
 
 [dev-dependencies]
 # Write generated .docx files into a throwaway dir instead of polluting the repo.

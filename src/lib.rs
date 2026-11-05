@@ -29,6 +29,7 @@
 //!
 //! - `cli` (default): the `md2star-rs`, `md2docx` and `md2pptx` binaries.
 //! - `pdf`: in-process PDF output.
+//! - `mermaid`: Mermaid diagrams rendered to SVG in process.
 //! - `net`: fetch `http(s)://` images (still opt-in per conversion).
 //! - `llm`: model-assisted layout selection through an OpenAI-compatible endpoint.
 //!
@@ -64,6 +65,8 @@ pub mod twin;
 pub mod cli;
 #[cfg(feature = "llm")]
 pub mod llm;
+#[cfg(feature = "mermaid")]
+pub mod mermaid;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 
