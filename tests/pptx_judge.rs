@@ -15,8 +15,7 @@ use pptx_common::Deck;
 /// The bundled template plus an exact copy of "Title and Content" named
 /// "Title and Content B": two layouts no geometry can tell apart.
 pub fn twin_template() -> Vec<u8> {
-    let mut zin =
-        zip::ZipArchive::new(Cursor::new(md2star_rs::templates::DEFAULT_PPTX)).unwrap();
+    let mut zin = zip::ZipArchive::new(Cursor::new(md2star_rs::templates::DEFAULT_PPTX)).unwrap();
     let mut parts = Vec::new();
     for i in 0..zin.len() {
         let mut f = zin.by_index(i).unwrap();
@@ -101,7 +100,10 @@ fn without_a_judge_the_canonical_layout_wins_the_tie() {
     let mut o = Options::default();
     o.reference_doc = Some(twin_template());
     let out = md2star_rs::convert(MD, md2star_rs::Format::Pptx, &o).unwrap();
-    assert_eq!(Deck::open(&out.bytes).layout_names()[1], "Title and Content");
+    assert_eq!(
+        Deck::open(&out.bytes).layout_names()[1],
+        "Title and Content"
+    );
 }
 
 #[test]
@@ -117,14 +119,20 @@ fn the_judge_breaks_a_near_tie_and_is_told_facts_in_words() {
     // closing.
     assert_eq!(asked.len(), 1, "{asked:?}");
     let (slide, candidates) = &asked[0];
-    assert_eq!((slide.index, slide.total, slide.title.as_str()), (2, 4, "Points"));
+    assert_eq!(
+        (slide.index, slide.total, slide.title.as_str()),
+        (2, 4, "Points")
+    );
     assert!(slide.description.contains("3 paragraph(s) or bullet(s)"));
     let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"Title and Content") && names.contains(&"Title and Content B"));
     for c in candidates {
         // Words, not coordinates.
         assert!(c.description.contains("text box"), "{}", c.description);
-        assert!(!c.description.chars().any(|ch| ch.is_ascii_digit() && c.description.contains("EMU")));
+        assert!(!c
+            .description
+            .chars()
+            .any(|ch| ch.is_ascii_digit() && c.description.contains("EMU")));
     }
 }
 
@@ -203,7 +211,10 @@ mod http {
         o.smart_layout = true;
         o.llm_endpoint = Some(url.clone());
         let out = md2star_rs::convert(MD, md2star_rs::Format::Pptx, &o).unwrap();
-        assert_eq!(Deck::open(&out.bytes).layout_names()[1], "Title and Content B");
+        assert_eq!(
+            Deck::open(&out.bytes).layout_names()[1],
+            "Title and Content B"
+        );
         let requests = seen.lock().unwrap().clone();
         assert_eq!(requests.len(), 1, "one near-tie, one question");
         let body: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
@@ -225,7 +236,10 @@ mod http {
         o.llm_endpoint = Some(bad);
         o.llm_model = Some("other".into());
         let out = md2star_rs::convert(MD, md2star_rs::Format::Pptx, &o).unwrap();
-        assert_eq!(Deck::open(&out.bytes).layout_names()[1], "Title and Content");
+        assert_eq!(
+            Deck::open(&out.bytes).layout_names()[1],
+            "Title and Content"
+        );
         assert!(out.warnings.iter().any(|w| w.code == "smart-layout-failed"));
 
         // No endpoint at all: a warning, never an error.

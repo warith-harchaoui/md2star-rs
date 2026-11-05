@@ -668,7 +668,10 @@ impl SlideWriter<'_> {
         let descr = pic.image.alt_text();
         let blip = if img.info.format == ImageFormat::Svg {
             let svg = self.media.add(&img.bytes, "svg");
-            let png = self.media.add(BLANK_PNG, "png");
+            let fallback =
+                super::images::svg_fallback_png(&img.bytes, img.info.width_px, img.info.height_px)
+                    .unwrap_or_else(|| BLANK_PNG.to_vec());
+            let png = self.media.add(&fallback, "png");
             let png_id = self.rels.add("image", &format!("../media/{png}"), false);
             let svg_id = self.rels.add("image", &format!("../media/{svg}"), false);
             super::images::svg_blip(&png_id, &svg_id)

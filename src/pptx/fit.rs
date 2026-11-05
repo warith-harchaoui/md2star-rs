@@ -172,6 +172,11 @@ pub struct Typo {
     pub min_pt: Option<f32>,
     /// The monospaced face for code.
     pub mono_font: String,
+    /// The size occupancy is *ranked* at (never set at): the template's own body size
+    /// on its canonical content layout. Without it a caption box declared at 12 pt
+    /// looks roomier than the content box at 18 pt, and a whole list lands in the
+    /// caption. md2star ranks at its 30 pt Kawasaki floor for the same reason.
+    pub rank_pt: f32,
 }
 
 impl Typo {
@@ -661,10 +666,18 @@ fn fill_box(
                 _ => None,
             })
             .collect();
+        let width = usable_width_pt(frame, ph.insets);
         let needed = paras_height(
             &paras,
-            usable_width_pt(frame, ph.insets),
+            width,
             &|p| para_size(p, ph, typo),
+            &|p| measure_of(ph, p.bold),
+            &|p| indent_pt(p, Some(ph), typo),
+        );
+        let ranked = paras_height(
+            &paras,
+            width,
+            &|p| para_size(p, ph, typo).max(typo.rank_pt),
             &|p| measure_of(ph, p.bold),
             &|p| indent_pt(p, Some(ph), typo),
         );
@@ -675,7 +688,7 @@ fn fill_box(
                 paras: paras.into_iter().cloned().collect(),
             }],
             needed <= avail,
-            needed / avail,
+            ranked / avail,
         );
     }
     if let [Unit::Picture(p)] = units {
@@ -986,6 +999,7 @@ mod tests {
         Typo {
             min_pt: min,
             mono_font: "Consolas".into(),
+            rank_pt: 0.0,
         }
     }
 

@@ -175,19 +175,29 @@ fn is_payload(b: &Block) -> bool {
         | Block::Mermaid { .. }
         | Block::BlockQuote(_) => true,
         Block::Paragraph(inl) => inl.iter().any(|i| matches!(i, Inline::Image(_))),
+        // A reference list is something to place, however short.
+        Block::Div { attr, .. }
+            if attr.id.as_deref() == Some("refs") || attr.has_class("references") =>
+        {
+            true
+        }
         Block::Div { content, .. } => content.iter().any(is_payload) || content.is_empty(),
         _ => false,
     }
 }
 
 fn prose(body: &[Block]) -> Vec<Vec<Inline>> {
-    body.iter()
-        .filter_map(|b| match b {
-            Block::Paragraph(i) if !i.is_empty() => Some(i.clone()),
-            Block::Heading { content, .. } => Some(content.clone()),
-            _ => None,
-        })
-        .collect()
+    let mut out = Vec::new();
+    for b in body {
+        match b {
+            Block::Paragraph(i) if !i.is_empty() => out.push(i.clone()),
+            Block::Heading { content, .. } => out.push(content.clone()),
+            // A div (a reference list, a styled block) is read through.
+            Block::Div { content, .. } => out.extend(prose(content)),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn norm(text: &str) -> String {
@@ -783,6 +793,20 @@ fn rank(
     slide_index: usize,
     total: usize,
 ) -> Option<(Plan, String)> {
+    // The kind of layout this content calls for: the template's canonical one of that
+    // kind gets the bonus, not the canonical picture layout for a slide of text.
+    let has_picture = content
+        .flows
+        .iter()
+        .flatten()
+        .any(|u| matches!(u, Unit::Picture(_)));
+    let wanted = if content.columns {
+        Archetype::MultiColumn
+    } else if has_picture {
+        Archetype::Picture
+    } else {
+        Archetype::Content
+    };
     // (plan, geometric score): the canonical bonus ranks, the geometry decides what
     // counts as a near-tie.
     let mut plans: Vec<(Plan, f32)> = candidates
@@ -790,7 +814,7 @@ fn rank(
         .map(|&i| {
             let mut p = fit::plan(content, i, ctx.info, &ctx.typo);
             let geometric = p.score;
-            if ctx.canonical(i) {
+            if ctx.canonical(i) && ctx.archetypes[i] == wanted {
                 // The designer's own choice for this kind of slide: Python md2star's
                 // "first seen per archetype", with the template's usage first.
                 p.score += CANONICAL_BONUS;

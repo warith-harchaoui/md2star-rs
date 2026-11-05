@@ -122,10 +122,12 @@ pub fn render_with_judge(
     let package =
         template::Package::open(template_bytes).map_err(|e| Error::Template(e.to_string()))?;
     let info = template::template_info(&package)?;
-    let typo = fit::Typo {
+    let mut typo = fit::Typo {
         min_pt: options.min_pt.filter(|m| *m > 0.0),
         mono_font: mono_font(),
+        rank_pt: 0.0,
     };
+    typo.rank_pt = rank_size(&info, &typo);
 
     // Images, loaded once.
     let resolver = Resolver::from_options(options);
@@ -199,6 +201,22 @@ pub fn render_with_judge(
     };
     let bytes = writer::write(&input, &mut warnings)?;
     Ok(Rendered { bytes, warnings })
+}
+
+/// The size occupancy is ranked at: the body size of the template's canonical
+/// content layout (the most used "title and one text box"), raised to `--min-pt`.
+fn rank_size(info: &template::TemplateInfo, typo: &fit::Typo) -> f32 {
+    let ctx = layout::Ctx::new(info, typo.clone(), None);
+    let size = (0..info.layouts.len())
+        .find(|&i| ctx.archetypes[i] == fit::Archetype::Content && ctx.canonical(i))
+        .and_then(|i| {
+            let l = &info.layouts[i];
+            fit::bodies(l, info)
+                .first()
+                .map(|&b| l.placeholders[b].size_pt(0))
+        })
+        .unwrap_or(18.0);
+    typo.eff(size)
 }
 
 /// Fold the options that override the front matter into the document.

@@ -5,8 +5,9 @@
 //! **contain-fitted** there (aspect kept, centred: a picture is never cropped or
 //! stretched), sized down further by `{width=…}` / `{height=…}` when the author asks
 //! ([`fit_in`]), and written as a `<p:pic>` ([`pic_xml`]) whose description is the alt
-//! text. SVG goes in as `asvg:svgBlip` with a transparent PNG stand-in, the way
-//! PowerPoint itself stores it. An image that cannot be loaded is a warning and its alt
+//! text. SVG goes in as `asvg:svgBlip` with a PNG fallback, the way PowerPoint itself
+//! stores it: rasterised in process by `resvg` with the `svg` feature (on by default,
+//! the same one the DOCX writer uses), a transparent pixel without it. An image that cannot be loaded is a warning and its alt
 //! text in italics, not a failed deck. A picture never covers text: the fit model gives
 //! each its own box or stacks them (the audit checks it).
 
@@ -73,6 +74,43 @@ pub fn svg_blip(png_rel: &str, svg_rel: &str) -> String {
     )
 }
 
+/// The PNG fallback of an SVG drawn `width_px` × `height_px` CSS pixels: rendered at
+/// twice that size (crisp on dense screens), the longer side capped at 4096 pixels.
+/// `None` when the SVG cannot be read or the `svg` feature is off.
+#[cfg(feature = "svg")]
+pub fn svg_fallback_png(svg: &[u8], width_px: u32, height_px: u32) -> Option<Vec<u8>> {
+    use resvg::{tiny_skia, usvg};
+    use std::sync::{Arc, OnceLock};
+
+    static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+    let fonts = FONTS.get_or_init(|| {
+        let mut db = usvg::fontdb::Database::new();
+        db.load_system_fonts();
+        Arc::new(db)
+    });
+    let options = usvg::Options {
+        fontdb: Arc::clone(fonts),
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_data(svg, &options).ok()?;
+    let (w, h) = (width_px.max(1) as f32 * 2.0, height_px.max(1) as f32 * 2.0);
+    let cap = (4096.0 / w.max(h)).min(1.0);
+    let (w, h) = ((w * cap).round().max(1.0), (h * cap).round().max(1.0));
+    let size = tree.size();
+    let mut pixmap = tiny_skia::Pixmap::new(w as u32, h as u32)?;
+    let transform =
+        tiny_skia::Transform::from_scale(w / size.width().max(1.0), h / size.height().max(1.0));
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    pixmap.encode_png().ok()
+}
+
+/// Without the `svg` feature there is no rasteriser: the caller keeps its stand-in.
+#[cfg(not(feature = "svg"))]
+pub fn svg_fallback_png(svg: &[u8], width_px: u32, height_px: u32) -> Option<Vec<u8>> {
+    let _ = (svg, width_px, height_px);
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +121,16 @@ mod tests {
         assert!(x.contains("descr=\"a &lt; b\""));
         assert!(x.contains("r:embed=\"rId2\""));
         assert!(x.contains("<a:off x=\"1\" y=\"2\"/><a:ext cx=\"3\" cy=\"4\"/>"));
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn an_svg_is_rasterised_for_its_fallback() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#2a6"/></svg>"##;
+        let png = svg_fallback_png(svg, 40, 20).unwrap();
+        let info = crate::resources::probe(&png).unwrap();
+        assert_eq!((info.width_px, info.height_px), (80, 40));
+        assert!(svg_fallback_png(b"not svg", 1, 1).is_none());
     }
 
     #[test]

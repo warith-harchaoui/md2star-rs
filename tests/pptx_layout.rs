@@ -87,12 +87,21 @@ fn roles_land_on_the_layouts_the_template_names_like_md2star_does() {
 
 #[test]
 fn a_statement_without_its_layout_is_set_large_on_the_stage() {
-    let out = convert("# A\n\n## Big idea\n\nLess is more.\n\n## B\n\n- x\n", Format::Pptx, &Options::default()).unwrap();
+    let out = convert(
+        "# A\n\n## Big idea\n\nLess is more.\n\n## B\n\n- x\n",
+        Format::Pptx,
+        &Options::default(),
+    )
+    .unwrap();
     let deck = Deck::open(&out.bytes);
     assert_eq!(deck.layout_names()[1], "Title Only");
     let s = deck.slide(2);
     assert!(s.contains("algn=\"ctr\""));
-    assert!(deck.sizes(2).iter().any(|&z| z >= 28.0), "{:?}", deck.sizes(2));
+    assert!(
+        deck.sizes(2).iter().any(|&z| z >= 28.0),
+        "{:?}",
+        deck.sizes(2)
+    );
 }
 
 #[test]
@@ -156,7 +165,8 @@ fn a_slide_no_layout_holds_is_split_with_a_continuation_label() {
 #[test]
 fn a_french_deck_continues_with_suite_and_a_table_repeats_its_header() {
     let rows: String = (1..=30).map(|i| format!("| ligne {i} | {i} |\n")).collect();
-    let md = format!("---\nlang: fr-FR\n---\n\n## Chiffres\n\n| Nom | Valeur |\n|---|---:|\n{rows}");
+    let md =
+        format!("---\nlang: fr-FR\n---\n\n## Chiffres\n\n| Nom | Valeur |\n|---|---:|\n{rows}");
     let mut o = Options::default();
     o.min_pt = Some(30.0);
     let out = convert(&md, Format::Pptx, &o).unwrap();
@@ -166,7 +176,10 @@ fn a_french_deck_continues_with_suite_and_a_table_repeats_its_header() {
     assert!(deck.slide(2).contains(">Chiffres<") || deck.slide(2).contains("Chiffres (suite)"));
     assert!(deck.slide(2).contains("(suite)"));
     for n in 1..=deck.slide_count() {
-        assert!(deck.slide(n).contains(">Nom<"), "slide {n} repeats the header");
+        assert!(
+            deck.slide(n).contains(">Nom<"),
+            "slide {n} repeats the header"
+        );
     }
     let joined: String = (1..=deck.slide_count()).map(|n| deck.slide(n)).collect();
     assert!(joined.contains(">ligne 30<"));
@@ -221,7 +234,13 @@ fn a_section_after_the_cover_is_a_divider() {
 /// Every word of the Markdown's text reaches the deck (slides or notes).
 #[test]
 fn nothing_is_dropped_from_the_fixtures() {
-    for name in ["deck", "syntax", "comprehensive_presentation", "branded_slides", "simple"] {
+    for name in [
+        "deck",
+        "syntax",
+        "comprehensive_presentation",
+        "branded_slides",
+        "simple",
+    ] {
         let md = std::fs::read_to_string(fixtures().join(format!("{name}.md"))).unwrap();
         for min in [None, Some(30.0)] {
             let mut o = options();
@@ -299,11 +318,10 @@ fn words_of(doc: &md2star_rs::Document) -> Vec<String> {
     let mut out = Vec::new();
     walk(&doc.blocks, &mut out);
     // Words long enough to be specific; punctuation-only tokens say nothing.
+    // A citation key is replaced by its rendered form once the bibliography resolves.
     out.into_iter()
-        .map(|w| {
-            w.trim_matches(|c: char| !c.is_alphanumeric())
-                .to_string()
-        })
+        .filter(|w| !w.starts_with('@') && !w.starts_with("[@") && !w.contains("@"))
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
         .filter(|w| w.chars().count() >= 4)
         .collect()
 }

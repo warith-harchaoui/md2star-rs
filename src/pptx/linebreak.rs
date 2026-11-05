@@ -80,7 +80,11 @@ pub fn cost_break(left: &str, right: &str) -> f32 {
     {
         return 1e6;
     }
-    if GLUE_AFTER.contains(&lw.as_str()) || lw.ends_with('\'') || lw.ends_with('’') {
+    // "1." or "2)" opening a numbered title stays with what it numbers.
+    let ordinal = left.len() <= 4
+        && left.ends_with(['.', ')'])
+        && is_number(left.trim_end_matches(['.', ')']));
+    if ordinal || GLUE_AFTER.contains(&lw.as_str()) || lw.ends_with('\'') || lw.ends_with('’') {
         return 400.0;
     }
     if left.ends_with([',', ';', ':', '.', '!', '?', ')', '»', '…']) {
@@ -288,6 +292,7 @@ mod tests {
         assert_eq!(cost_break("de", "la"), 400.0);
         assert_eq!(cost_break("fin.", "Puis"), -40.0);
         assert_eq!(cost_break("x", "which"), -25.0);
+        assert_eq!(cost_break("1.", "Local"), 400.0);
     }
 
     #[test]

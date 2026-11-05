@@ -77,9 +77,13 @@ fn text_box(id: u32, name: &str, frame: (i64, i64, i64, i64), sz: u32, text: &st
 
 #[test]
 fn a_broken_deck_reports_each_defect_by_name() {
-    let clean = convert("# One\n\n- a\n\n# Two\n\n- b\n", Format::Pptx, &Options::default())
-        .unwrap()
-        .bytes;
+    let clean = convert(
+        "# One\n\n- a\n\n# Two\n\n- b\n",
+        Format::Pptx,
+        &Options::default(),
+    )
+    .unwrap()
+    .bytes;
     let broken = patch(&clean, "ppt/slides/slide1.xml", |xml| {
         let extra = [
             // Half off the right edge.
@@ -103,11 +107,26 @@ fn a_broken_deck_reports_each_defect_by_name() {
         .iter()
         .map(|f| (f.kind, f.shape.clone()))
         .collect();
-    assert!(kinds.contains(&(FindingKind::OffCanvas, "Runaway".into())), "{kinds:?}");
-    assert!(kinds.iter().any(|(k, _)| *k == FindingKind::Overlap), "{kinds:?}");
-    assert!(kinds.contains(&(FindingKind::GhostPlaceholder, "Ghost".into())), "{kinds:?}");
-    assert!(kinds.contains(&(FindingKind::Unreadable, "Tiny".into())), "{kinds:?}");
-    assert!(kinds.contains(&(FindingKind::Overrun, "Crammed".into())), "{kinds:?}");
+    assert!(
+        kinds.contains(&(FindingKind::OffCanvas, "Runaway".into())),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.iter().any(|(k, _)| *k == FindingKind::Overlap),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.contains(&(FindingKind::GhostPlaceholder, "Ghost".into())),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.contains(&(FindingKind::Unreadable, "Tiny".into())),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.contains(&(FindingKind::Overrun, "Crammed".into())),
+        "{kinds:?}"
+    );
     assert!(report.fails(false));
     // Severity order within the slide: off-slide first, overrun last.
     assert_eq!(report.findings[0].kind, FindingKind::OffCanvas);
@@ -141,9 +160,31 @@ fn a_picture_over_text_is_an_overlap() {
         // A text box right under the picture's middle.
         let start = xml.find("<p:pic>").unwrap();
         let off = &xml[start..];
-        let x: i64 = off.split("<a:off x=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
-        let y: i64 = off.split(" y=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
-        let tb = text_box(50, "Hidden", (x + 100_000, y + 100_000, 2_000_000, 600_000), 2400, "covered");
+        let x: i64 = off
+            .split("<a:off x=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let y: i64 = off
+            .split(" y=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let tb = text_box(
+            50,
+            "Hidden",
+            (x + 100_000, y + 100_000, 2_000_000, 600_000),
+            2400,
+            "covered",
+        );
         xml.replace("<p:pic>", &format!("{tb}<p:pic>"))
     });
     let report = audit(&broken, &AuditOptions::default()).unwrap();
