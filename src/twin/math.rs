@@ -65,20 +65,20 @@ impl Cx {
                 if !sup.is_empty() && sup.chars().all(|c| c == '\'') {
                     format!("{base}{sup}")
                 } else {
-                    format!("{}^{{{}}}", base_of(&base), sup)
+                    format!("{}^{}", base_of(&base), script(&sup))
                 }
             }
             "sSub" => {
                 let base = self.arg(n, "e");
-                format!("{}_{{{}}}", base_of(&base), self.arg(n, "sub"))
+                format!("{}_{}", base_of(&base), script(&self.arg(n, "sub")))
             }
             "sSubSup" => {
                 let base = self.arg(n, "e");
                 format!(
-                    "{}_{{{}}}^{{{}}}",
+                    "{}_{}^{}",
                     base_of(&base),
-                    self.arg(n, "sub"),
-                    self.arg(n, "sup")
+                    script(&self.arg(n, "sub")),
+                    script(&self.arg(n, "sup"))
                 )
             }
             "sPre" => format!(
@@ -372,6 +372,15 @@ fn delim_tex(c: &str) -> String {
     }
 }
 
+/// A script as LaTeX writes it: one character bare (`x^2`), anything longer braced.
+fn script(s: &str) -> String {
+    if s.chars().count() == 1 {
+        s.to_string()
+    } else {
+        format!("{{{s}}}")
+    }
+}
+
 /// A script base that is more than one token keeps its braces.
 fn base_of(base: &str) -> String {
     let single = base.chars().count() == 1
@@ -590,7 +599,7 @@ mod tests {
                 r("mc"),
                 r("2")
             )),
-            "E={mc}^{2}"
+            "E={mc}^2"
         );
         assert_eq!(
             tex(&format!(
@@ -599,7 +608,7 @@ mod tests {
                 r("i"),
                 r("2")
             )),
-            "x_{i}^{2}"
+            "x_i^2"
         );
     }
 

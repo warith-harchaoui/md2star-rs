@@ -22,10 +22,11 @@ fn fixtures() -> PathBuf {
 }
 
 fn norm(s: &str) -> String {
-    // Formula delimiters go; Pandoc's smart quotes are the same characters to a reader.
+    // Pandoc's smart quotes are the same characters to a reader.
     let s: String = s
         .chars()
-        .filter(|c| *c != '$')
+        // Formula delimiters and grouping braces: `x^{2}` and `x^2` are one formula.
+        .filter(|c| !matches!(c, '$' | '{' | '}'))
         .map(|c| match c {
             '\u{2018}' | '\u{2019}' => '\'',
             '\u{201C}' | '\u{201D}' => '"',
@@ -200,8 +201,6 @@ fn docx_options() -> Options {
 
 // A front-matter title: without one, md2star's rule (kept by the DOCX writer) turns the
 // first `#` heading into the document title, and the twin gives it back as `title:`.
-// The formula is written `x^{2}`, the spelling the OMML → LaTeX reader gives back for
-// the native equation the writer now produces.
 const DOCX_SAMPLE: &str = "\
 ---
 title: Round trip
@@ -242,7 +241,7 @@ fn main() {
 }
 ```
 
-Text with $x^{2}$ inline and an escaped \\*star\\* and snake_case.
+Text with $x^2$ inline and an escaped \\*star\\* and snake_case.
 
 [^a]: The note body.
 ";
@@ -303,4 +302,18 @@ fn python_reference_pptx_round_trips_to_its_source() {
         .replacen("Richard Feynman\n\nWednesday, July 15, 2026\n", "", 1);
     let source_body = md.replacen("# Footnotes Demonstration\n", "", 1);
     assert_same(&source_body, &twin_body, true);
+}
+
+#[test]
+fn docx_round_trip_with_the_default_styles() {
+    // No reference document: the writer's own styles carry the structure.
+    let mut options = Options::default();
+    options.base_dir = Some(fixtures());
+    let out = md2star_rs::convert(DOCX_SAMPLE, Format::Docx, &options).unwrap();
+    let twin = twin::to_markdown(&out.bytes, SourceKind::Docx, &TwinOptions::default()).unwrap();
+    assert_same(DOCX_SAMPLE, &twin.markdown, false);
+    assert_eq!(
+        reader::read(&twin.markdown).meta.title.as_deref(),
+        Some("Round trip")
+    );
 }
