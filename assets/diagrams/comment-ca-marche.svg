@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1237 432" width="1237" height="432" role="img" aria-labelledby="m2rf-title m2rf-desc" font-family="Roboto, 'Helvetica Neue', Arial, sans-serif">
-  <title id="m2rf-title">Comment md2star-rs fonctionne : du Markdown en entrée, un .docx ou un .pptx en sortie, sans aucun Pandoc</title>
-  <desc id="m2rf-desc">Une planche qui se lit de gauche à droite. Entrée : du Markdown, sous forme de chaîne ou de fichier. Le travail, en trois étapes numérotées : pulldown-cmark lit le flux d'événements CommonMark puis GFM ; ces événements sont repliés dans l'AST de blocs et d'éléments en ligne propre à ce crate, qui est la couture lecteur-écrivain que Pandoc utilise en interne ; puis l'un des deux écrivains émet le document, docx-rs pour Word ou l'écrivain PresentationML pour une présentation. Sortie : un fichier .docx ou .pptx, déterministe à l'octet près, si bien qu'une nouvelle exécution produit les mêmes octets. Dessous, un seul crate qui interdit le code unsafe puis documente chaque élément public, sans sous-processus ni installation de Pandoc. On l'atteint par trois surfaces : une API Rust, trois lignes de commande clap derrière une option de compilation, puis un skill d'agent. La légende rappelle que l'AST nommé du milieu est ce qui permet à un second moteur de s'insérer sans toucher au lecteur.</desc>
+  <title id="m2rf-title">Comment md2star-rs fonctionne : du Markdown en entrée, un .docx, un .pptx ou un .pdf en sortie, sans aucun Pandoc</title>
+  <desc id="m2rf-desc">Une planche qui se lit de gauche à droite. Entrée : du Markdown, sous forme de chaîne ou de fichier. Le travail, en trois étapes numérotées : pulldown-cmark lit le flux d'événements CommonMark puis GFM ; ces événements sont repliés dans l'AST de blocs et d'éléments en ligne propre à ce crate, qui est la couture lecteur-écrivain que Pandoc utilise en interne ; puis un écrivain émet le document : WordprocessingML écrit en direct pour Word, PresentationML sur les dispositions du modèle pour une présentation, Typst compilé sur place pour un PDF. Sortie : un fichier .docx, .pptx ou .pdf, déterministe à l'octet près, si bien qu'une nouvelle exécution produit les mêmes octets. Dessous, un seul crate qui interdit le code unsafe puis documente chaque élément public, sans sous-processus ni installation de Pandoc. On l'atteint par trois surfaces : une API Rust, trois lignes de commande clap derrière une option de compilation, puis un skill d'agent. La légende rappelle que l'AST nommé du milieu est ce qui permet à un second moteur de s'insérer sans toucher au lecteur.</desc>
   <style>
     .panel      { fill: #ffffff; stroke: #d6d6d6; stroke-width: 1.5; }
     .panel-label{ fill: #6b6b6b; font-size: 13px; font-weight: 600; letter-spacing: .08em; }
@@ -54,12 +54,12 @@
   <path class="flow" d="M734 133 H750" marker-end="url(#m2rf-arrow)"/>
   <rect class="stage" x="756" y="94" width="218" height="78" rx="10"/>
   <text class="n-title" x="865" y="127" text-anchor="middle">écrire</text>
-  <text class="n-sub" x="865" y="146" text-anchor="middle">docx-rs, ou PresentationML</text>
+  <text class="n-sub" x="865" y="146" text-anchor="middle">OOXML écrit en direct, ou Typst</text>
   <text class="step" x="767" y="110">3</text>
   <path class="flow" d="M1000 126 H1016" marker-end="url(#m2rf-arrow)"/>
   <text class="panel-label" x="1020" y="40">SORTIE</text>
   <rect class="io" x="1020" y="87" width="189" height="78" rx="10"/>
-  <text class="n-title" x="1114" y="120" text-anchor="middle">.docx ou .pptx</text>
+  <text class="n-title" x="1114" y="120" text-anchor="middle">.docx, .pptx ou .pdf</text>
   <text class="n-sub" x="1114" y="139" text-anchor="middle">sortie déterministe à l'octet</text>
   <rect class="core" x="392" y="232" width="432" height="54" rx="10"/>
   <text class="on-dark" x="608" y="253" text-anchor="middle">un seul crate, aucun unsafe, aucun sous-processus</text>
